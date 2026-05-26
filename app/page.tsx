@@ -1,65 +1,1063 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useState, useEffect, useRef } from "react";
+import { useCuentas } from "@/hooks/useCuentas";
+import { useCobros } from "@/hooks/useCobros";
+import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
+import type { Cobro, Cuenta, Item } from "@/lib/types";
+
+type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | null;
+type LineaParcial = { nombre: string; precio: number; max: number; cobrar: number };
+
+export default function Page() {
+  const { cuentas, loading, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, refetch: refetchCuentas } = useCuentas();
+  const { cobros, cobrarCuenta, cerrarDia, refetch: refetchCobros } = useCobros();
+
+  const [idActiva, setIdActiva] = useState<string | null>(null);
+
+  const [categoria, setCategoria] = useState(CATEGORIAS[0]);
+
+  const [creando, setCreando] = useState(false);
+  const [nuevoNombre, setNuevoNombre] = useState("");
+
+  const [editandoNombre, setEditandoNombre] = useState(false);
+  const [nombreEditado, setNombreEditado] = useState("");
+
+  const [confirmandoBorrar, setConfirmandoBorrar] = useState(false);
+
+  const [libreNombre, setLibreNombre] = useState("");
+  const [libreImporte, setLibreImporte] = useState("");
+
+  const [sesionId] = useState(() => Date.now().toString());
+
+  const [seleccionParcial, setSeleccionParcial] = useState<LineaParcial[]>([]);
+
+  const [modal, setModal] = useState<Modal>(null);
+  const [efectivo, setEfectivo] = useState("");
+  const [personas, setPersonas] = useState(2);
+  const [confirmandoCierre, setConfirmandoCierre] = useState(false);
+  const [cobrando, setCobrando] = useState(false);
+
+  const [vistaMovil, setVistaMovil] = useState<"carta" | "ticket">("carta");
+
+  // Cobro rápido
+  const [itemsRapidos, setItemsRapidos] = useState<Item[]>([]);
+  const [categoriaRapida, setCategoriaRapida] = useState(CATEGORIAS[0]);
+
+  // Lista de compra
+  const [listaCompra, setListaCompra] = useState<{ texto: string; hecho: boolean }[]>([]);
+  const [nuevoItemCompra, setNuevoItemCompra] = useState("");
+  const inputCompraRef = useRef<HTMLInputElement>(null);
+
+  // Historial: cobro expandido para ver ticket
+  const [cobroExpandido, setCobroExpandido] = useState<string | null>(null);
+
+  // Juntar cuentas: ID de la cuenta que se absorbe
+  const [idCuentaJuntar, setIdCuentaJuntar] = useState<string | null>(null);
+
+  // Guardar/cargar lista de compra desde localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("timbre-lista-compra");
+      if (saved) setListaCompra(JSON.parse(saved));
+    } catch {}
+  }, []);
+
+  // Guardar lista de compra en localStorage al cambiar
+  useEffect(() => {
+    localStorage.setItem("timbre-lista-compra", JSON.stringify(listaCompra));
+  }, [listaCompra]);
+
+  // ── Computed ───────────────────────────────────────────────
+  const cuentaActiva = cuentas.find((c) => c.id === idActiva) ?? null;
+  const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria);
+  const productosRapidosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoriaRapida);
+  const totalDia = cobros.reduce((s, c) => s + Number(c.total), 0);
+  const cambio = parseFloat(efectivo || "0") - (cuentaActiva?.total ?? 0);
+  const sinItems = (cuentaActiva?.items.length ?? 0) === 0;
+  const totalRapido = itemsRapidos.reduce((s, i) => s + i.precio * i.cantidad, 0);
+  const itemsCompraPendientes = listaCompra.filter((i) => !i.hecho).length;
+  const cuentasParaJuntar = cuentas.filter((c) => c.id !== idActiva);
+
+  // ── Handlers ──────────────────────────────────────────────
+
+  function handleRefrescar() {
+    refetchCuentas();
+    refetchCobros();
+  }
+
+  async function handleCrearCuenta() {
+    if (!nuevoNombre.trim()) return;
+    const nueva = await crearCuenta(nuevoNombre.trim());
+    if (nueva) setIdActiva(nueva.id);
+    setNuevoNombre("");
+    setCreando(false);
+  }
+
+  async function handleGuardarNombre() {
+    if (!cuentaActiva || !nombreEditado.trim()) { setEditandoNombre(false); return; }
+    await renombrarCuenta(cuentaActiva.id, nombreEditado.trim());
+    setEditandoNombre(false);
+  }
+
+  async function handleBorrarCuenta() {
+    if (!cuentaActiva) return;
+    await eliminarCuenta(cuentaActiva.id);
+    const siguiente = cuentas.find((c) => c.id !== cuentaActiva.id);
+    setIdActiva(siguiente?.id ?? null);
+    setConfirmandoBorrar(false);
+  }
+
+  async function handleAgregar(nombre: string, precio: number) {
+    if (!cuentaActiva) return;
+    const existe = cuentaActiva.items.find((i) => i.nombre === nombre);
+    const items = existe
+      ? cuentaActiva.items.map((i) =>
+          i.nombre === nombre ? { ...i, cantidad: i.cantidad + 1 } : i
+        )
+      : [...cuentaActiva.items, { nombre, precio, cantidad: 1 }];
+    await actualizarCuenta(cuentaActiva.id, items);
+  }
+
+  async function handleSumar(nombre: string) {
+    if (!cuentaActiva) return;
+    await actualizarCuenta(
+      cuentaActiva.id,
+      cuentaActiva.items.map((i) =>
+        i.nombre === nombre ? { ...i, cantidad: i.cantidad + 1 } : i
+      )
+    );
+  }
+
+  async function handleRestar(nombre: string) {
+    if (!cuentaActiva) return;
+    await actualizarCuenta(
+      cuentaActiva.id,
+      cuentaActiva.items
+        .map((i) => (i.nombre === nombre ? { ...i, cantidad: i.cantidad - 1 } : i))
+        .filter((i) => i.cantidad > 0)
+    );
+  }
+
+  async function handleEliminarLinea(nombre: string) {
+    if (!cuentaActiva) return;
+    await actualizarCuenta(
+      cuentaActiva.id,
+      cuentaActiva.items.filter((i) => i.nombre !== nombre)
+    );
+  }
+
+  async function handleAgregarLibre() {
+    if (!cuentaActiva || !libreImporte) return;
+    const precio = parseFloat(libreImporte);
+    if (precio <= 0) return;
+    const nombre = libreNombre.trim() || `Varios ${precio.toFixed(2)}€`;
+    await handleAgregar(nombre, precio);
+    setModal(null);
+    setLibreNombre("");
+    setLibreImporte("");
+  }
+
+  async function handleCobrar() {
+    if (!cuentaActiva || cobrando) return;
+    setCobrando(true);
+    await cobrarCuenta(cuentaActiva, sesionId);
+    await eliminarCuenta(cuentaActiva.id);
+    const siguiente = cuentas.find((c) => c.id !== cuentaActiva.id);
+    setIdActiva(siguiente?.id ?? null);
+    setModal(null);
+    setEfectivo("");
+    setCobrando(false);
+  }
+
+  function abrirCobroParcial() {
+    if (!cuentaActiva) return;
+    setSeleccionParcial(
+      cuentaActiva.items.map((i) => ({
+        nombre: i.nombre,
+        precio: i.precio,
+        max: i.cantidad,
+        cobrar: i.cantidad,
+      }))
+    );
+    setModal("parcial");
+  }
+
+  async function handleCobrarParcial() {
+    if (!cuentaActiva || cobrando) return;
+    const itemsACobrar = seleccionParcial
+      .filter((l) => l.cobrar > 0)
+      .map((l) => ({ nombre: l.nombre, precio: l.precio, cantidad: l.cobrar }));
+    if (itemsACobrar.length === 0) return;
+    setCobrando(true);
+    await cobrarCuenta(cuentaActiva, sesionId, itemsACobrar);
+    const restantes = cuentaActiva.items
+      .map((i) => {
+        const l = seleccionParcial.find((s) => s.nombre === i.nombre);
+        return l ? { ...i, cantidad: i.cantidad - l.cobrar } : i;
+      })
+      .filter((i) => i.cantidad > 0);
+    if (restantes.length === 0) {
+      await eliminarCuenta(cuentaActiva.id);
+      setIdActiva(cuentas.find((c) => c.id !== cuentaActiva.id)?.id ?? null);
+    } else {
+      await actualizarCuenta(cuentaActiva.id, restantes);
+    }
+    setModal(null);
+    setCobrando(false);
+  }
+
+  async function handleCerrarDia() {
+    await cerrarDia();
+    setConfirmandoCierre(false);
+    setModal(null);
+  }
+
+  // ── Cobro rápido ──────────────────────────────────────────
+
+  function agregarItemRapido(nombre: string, precio: number) {
+    setItemsRapidos((prev) => {
+      const existe = prev.find((i) => i.nombre === nombre);
+      if (existe) return prev.map((i) => i.nombre === nombre ? { ...i, cantidad: i.cantidad + 1 } : i);
+      return [...prev, { nombre, precio, cantidad: 1 }];
+    });
+  }
+
+  function restarItemRapido(nombre: string) {
+    setItemsRapidos((prev) =>
+      prev.map((i) => i.nombre === nombre ? { ...i, cantidad: i.cantidad - 1 } : i)
+          .filter((i) => i.cantidad > 0)
+    );
+  }
+
+  async function handleCobrarRapido() {
+    if (cobrando || itemsRapidos.length === 0) return;
+    setCobrando(true);
+    const hora = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    const cuentaFake: Cuenta = {
+      id: "rapido",
+      nombre: `Rápido ${hora}`,
+      items: itemsRapidos,
+      total: totalRapido,
+      created_at: new Date().toISOString(),
+    };
+    await cobrarCuenta(cuentaFake, sesionId);
+    setItemsRapidos([]);
+    setModal(null);
+    setCobrando(false);
+  }
+
+  // ── Lista de compra ───────────────────────────────────────
+
+  function agregarItemCompra() {
+    if (!nuevoItemCompra.trim()) return;
+    setListaCompra((prev) => [...prev, { texto: nuevoItemCompra.trim(), hecho: false }]);
+    setNuevoItemCompra("");
+    setTimeout(() => inputCompraRef.current?.focus(), 50);
+  }
+
+  function toggleItemCompra(idx: number) {
+    setListaCompra((prev) => prev.map((i, j) => j === idx ? { ...i, hecho: !i.hecho } : i));
+  }
+
+  function eliminarItemCompra(idx: number) {
+    setListaCompra((prev) => prev.filter((_, j) => j !== idx));
+  }
+
+  function borrarCompletados() {
+    setListaCompra((prev) => prev.filter((i) => !i.hecho));
+  }
+
+  // ── Juntar cuentas ────────────────────────────────────────
+
+  async function handleJuntarCuentas() {
+    if (!cuentaActiva || !idCuentaJuntar || cobrando) return;
+    const cuentaFuente = cuentas.find((c) => c.id === idCuentaJuntar);
+    if (!cuentaFuente) return;
+    setCobrando(true);
+    const itemsMerged = [...cuentaActiva.items];
+    for (const item of cuentaFuente.items) {
+      const existente = itemsMerged.find((i) => i.nombre === item.nombre);
+      if (existente) existente.cantidad += item.cantidad;
+      else itemsMerged.push({ ...item });
+    }
+    await actualizarCuenta(cuentaActiva.id, itemsMerged);
+    await eliminarCuenta(idCuentaJuntar);
+    setIdCuentaJuntar(null);
+    setModal(null);
+    setCobrando(false);
+  }
+
+  // ── Render ─────────────────────────────────────────────────
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+    <div className="flex flex-col bg-gray-950 text-white overflow-hidden select-none"
+         style={{ height: "100dvh" }}>
+
+      {/* ── Header ── */}
+      <header
+        className="shrink-0 flex items-center gap-2 px-3 bg-gray-900 border-b border-gray-800"
+        style={{ paddingTop: "calc(env(safe-area-inset-top) + 0.5rem)", paddingBottom: "0.5rem" }}
+      >
+        <span className="text-amber-400 font-bold text-base tracking-tight shrink-0 mr-1">El Timbre</span>
+
+        {/* Tabs de cuentas */}
+        <div className="flex-1 flex items-center gap-1.5 overflow-x-auto scroll-touch scrollbar-none">
+          {!loading && cuentas.map((c: Cuenta) => (
+            <button
+              key={c.id}
+              onClick={() => { setIdActiva(c.id); setVistaMovil("ticket"); setEditandoNombre(false); setConfirmandoBorrar(false); }}
+              className={`shrink-0 px-3 py-2 rounded-lg text-sm font-medium transition-colors touch-manipulation min-h-[40px] ${
+                c.id === idActiva ? "bg-amber-500 text-black" : "bg-gray-800 text-gray-300 active:bg-gray-700"
+              }`}
             >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+              {c.nombre}
+            </button>
+          ))}
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        {/* Nueva cuenta */}
+        {creando ? (
+          <div className="flex items-center gap-1 shrink-0">
+            <input
+              autoFocus
+              value={nuevoNombre}
+              onChange={(e) => setNuevoNombre(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") handleCrearCuenta(); if (e.key === "Escape") { setCreando(false); setNuevoNombre(""); } }}
+              placeholder="Nombre…"
+              className="w-24 bg-gray-800 border border-gray-600 focus:border-amber-500 rounded-lg px-2 py-1 outline-none"
+              style={{ fontSize: "16px" }}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            <button onClick={handleCrearCuenta} className="w-9 h-9 bg-amber-500 text-black rounded-lg text-sm font-bold touch-manipulation shrink-0">✓</button>
+            <button onClick={() => { setCreando(false); setNuevoNombre(""); }} className="w-9 h-9 bg-gray-700 rounded-lg text-sm touch-manipulation shrink-0">✕</button>
+          </div>
+        ) : (
+          <button onClick={() => setCreando(true)} className="shrink-0 w-10 h-10 rounded-lg bg-gray-800 active:bg-gray-700 text-gray-400 text-xl leading-none touch-manipulation">+</button>
+        )}
+
+        {/* Cobro rápido */}
+        <button
+          onClick={() => { setCategoriaRapida(CATEGORIAS[0]); setItemsRapidos([]); setModal("cobro-rapido"); }}
+          className="shrink-0 w-10 h-10 rounded-lg bg-amber-900/60 active:bg-amber-800/80 text-amber-400 text-lg leading-none touch-manipulation"
+          title="Cobro rápido"
+        >⚡</button>
+
+        {/* Lista de compra */}
+        <button
+          onClick={() => setModal("lista-compra")}
+          className="shrink-0 relative w-10 h-10 rounded-lg bg-gray-800 active:bg-gray-700 text-gray-400 text-base leading-none touch-manipulation"
+          title="Lista de compra"
+        >
+          🛒
+          {itemsCompraPendientes > 0 && (
+            <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center leading-none">
+              {itemsCompraPendientes}
+            </span>
+          )}
+        </button>
+
+        {/* Refrescar */}
+        <button
+          onClick={handleRefrescar}
+          className="shrink-0 w-10 h-10 rounded-lg bg-gray-800 active:bg-gray-700 text-gray-500 text-base leading-none touch-manipulation"
+          title="Actualizar"
+        >⟳</button>
+
+        {/* Historial */}
+        <button
+          onClick={() => { setConfirmandoCierre(false); setCobroExpandido(null); setModal("historial"); }}
+          className="shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs bg-gray-800 active:bg-gray-700 text-gray-300 touch-manipulation min-h-[40px]"
+        >
+          <span>Historial</span>
+          {cobros.length > 0 && (
+            <span className="bg-amber-500 text-black text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center leading-none">{cobros.length}</span>
+          )}
+        </button>
+      </header>
+
+      {/* ── Mobile toggle ── */}
+      <div className="md:hidden shrink-0 flex border-b border-gray-800 bg-gray-900">
+        {(["carta", "ticket"] as const).map((v) => (
+          <button key={v} onClick={() => setVistaMovil(v)}
+            className={`flex-1 py-3 text-sm font-semibold transition-colors touch-manipulation ${vistaMovil === v ? "text-amber-400 border-b-2 border-amber-400" : "text-gray-600"}`}>
+            {v === "ticket" && cuentaActiva ? `Ticket · ${cuentaActiva.total.toFixed(2)}€` : v === "carta" ? "Carta" : "Ticket"}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Main area ── */}
+      <div className="flex-1 flex overflow-hidden">
+
+        {/* ── LEFT: Ticket ── */}
+        <div className={`${vistaMovil === "ticket" ? "flex" : "hidden"} md:flex flex-col w-full md:w-72 lg:w-80 shrink-0 border-r border-gray-800`}>
+          {!cuentaActiva ? (
+            <div className="flex-1 flex items-center justify-center text-gray-700 text-sm p-6 text-center leading-relaxed">
+              Selecciona una cuenta<br />o crea una nueva
+            </div>
+          ) : (
+            <>
+              {/* ── Cabecera de cuenta ── */}
+              <div className="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-gray-800">
+                {editandoNombre ? (
+                  <input
+                    autoFocus
+                    value={nombreEditado}
+                    onChange={(e) => setNombreEditado(e.target.value)}
+                    onBlur={handleGuardarNombre}
+                    onKeyDown={(e) => { if (e.key === "Enter") handleGuardarNombre(); if (e.key === "Escape") setEditandoNombre(false); }}
+                    className="flex-1 bg-gray-800 border border-amber-500 rounded-lg px-2 py-1 text-sm font-semibold outline-none"
+                    style={{ fontSize: "16px" }}
+                  />
+                ) : (
+                  <button
+                    onClick={() => { setNombreEditado(cuentaActiva.nombre); setEditandoNombre(true); setConfirmandoBorrar(false); }}
+                    className="flex-1 text-left text-sm font-semibold text-white touch-manipulation flex items-center gap-1.5"
+                  >
+                    {cuentaActiva.nombre}
+                    <span className="text-gray-600 text-xs">✏</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => { setConfirmandoBorrar(!confirmandoBorrar); setEditandoNombre(false); }}
+                  className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm touch-manipulation transition-colors ${confirmandoBorrar ? "bg-red-600 text-white" : "bg-gray-800 text-gray-500 active:text-red-400"}`}
+                >
+                  🗑
+                </button>
+              </div>
+
+              {/* ── Confirmación borrar ── */}
+              {confirmandoBorrar && (
+                <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 bg-red-950/60 border-b border-red-900">
+                  <span className="text-red-300 text-xs">¿Borrar «{cuentaActiva.nombre}»?</span>
+                  <div className="flex gap-1.5">
+                    <button onClick={handleBorrarCuenta} className="px-3 py-1.5 bg-red-600 active:bg-red-700 rounded-lg text-xs font-bold touch-manipulation">Borrar</button>
+                    <button onClick={() => setConfirmandoBorrar(false)} className="px-3 py-1.5 bg-gray-700 active:bg-gray-600 rounded-lg text-xs touch-manipulation">No</button>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Lista de items ── */}
+              <div className="flex-1 overflow-y-auto scroll-touch p-3 flex flex-col gap-2">
+                {cuentaActiva.items.length === 0 ? (
+                  <p className="text-gray-700 text-sm text-center py-10">Sin artículos todavía</p>
+                ) : (
+                  cuentaActiva.items.map((item) => (
+                    <div key={item.nombre} className="flex items-center gap-1.5 bg-gray-900 rounded-xl px-2 py-2.5">
+                      <span className="flex-1 text-sm font-medium leading-tight min-w-0 truncate">{item.nombre}</span>
+                      <button onClick={() => handleRestar(item.nombre)} className="w-8 h-8 rounded-full bg-gray-700 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
+                      <span className="w-5 text-center text-sm tabular-nums shrink-0 font-semibold">{item.cantidad}</span>
+                      <button onClick={() => handleSumar(item.nombre)} className="w-8 h-8 rounded-full bg-gray-700 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
+                      <span className="w-12 text-right text-xs text-amber-400 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
+                      <button onClick={() => handleEliminarLinea(item.nombre)} className="w-7 h-7 rounded-lg bg-gray-800 active:bg-red-900 text-gray-500 active:text-red-400 text-sm shrink-0 touch-manipulation">×</button>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* ── Total + acciones ── */}
+              <div className="shrink-0 border-t border-gray-800 p-3 flex flex-col gap-2 bg-gray-950"
+                   style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.75rem)" }}>
+                <div className="flex justify-between items-baseline px-1">
+                  <span className="text-gray-400 text-sm uppercase tracking-wider">Total</span>
+                  <span className="text-3xl font-bold text-amber-400 tabular-nums">{cuentaActiva.total.toFixed(2)}€</span>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setModal("cobrar")} disabled={sinItems}
+                    className="flex-1 py-4 bg-green-600 active:bg-green-700 disabled:opacity-25 disabled:cursor-not-allowed rounded-2xl font-bold text-base touch-manipulation">
+                    Cobrar todo
+                  </button>
+                  <button onClick={abrirCobroParcial} disabled={sinItems}
+                    className="py-4 px-4 bg-green-900 active:bg-green-800 disabled:opacity-25 disabled:cursor-not-allowed rounded-2xl font-semibold text-sm text-green-300 touch-manipulation">
+                    Parcial
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => { setPersonas(2); setModal("dividir"); }} disabled={sinItems}
+                    className="flex-1 py-3 bg-blue-700 active:bg-blue-800 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold touch-manipulation">
+                    Dividir
+                  </button>
+                  <button onClick={() => { setEfectivo(""); setModal("cambio"); }} disabled={sinItems}
+                    className="flex-1 py-3 bg-gray-700 active:bg-gray-600 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold touch-manipulation">
+                    Cambio
+                  </button>
+                  <button
+                    onClick={() => { setIdCuentaJuntar(null); setModal("juntar"); }}
+                    disabled={cuentasParaJuntar.length === 0}
+                    className="flex-1 py-3 bg-purple-900 active:bg-purple-800 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-purple-300 touch-manipulation"
+                  >
+                    Juntar
+                  </button>
+                </div>
+                <button onClick={() => setModal("ticket")} disabled={sinItems}
+                  className="w-full py-2.5 bg-gray-800 active:bg-gray-700 disabled:opacity-25 border border-gray-700 rounded-xl text-sm text-gray-400 font-medium touch-manipulation">
+                  🧾 Ver ticket
+                </button>
+              </div>
+            </>
+          )}
         </div>
-      </main>
+
+        {/* ── RIGHT: Catalog ── */}
+        <div className={`${vistaMovil === "carta" ? "flex" : "hidden"} md:flex flex-col flex-1 overflow-hidden`}>
+
+          {/* Category tabs */}
+          <div className="shrink-0 flex gap-1.5 px-3 py-2 border-b border-gray-800 overflow-x-auto scroll-touch scrollbar-none">
+            {CATEGORIAS.map((cat) => (
+              <button key={cat} onClick={() => setCategoria(cat)}
+                className={`shrink-0 px-4 py-2 rounded-xl text-sm font-semibold touch-manipulation min-h-[40px] ${
+                  categoria === cat ? "bg-amber-500 text-black" : "bg-gray-800 text-gray-400 active:bg-gray-700"
+                }`}>
+                {cat}
+              </button>
+            ))}
+          </div>
+
+          {/* Importe libre */}
+          <div className="shrink-0 px-3 pt-2.5">
+            <button
+              onClick={() => { setLibreNombre(""); setLibreImporte(""); setModal("libre"); }}
+              disabled={!cuentaActiva}
+              className="w-full py-2.5 bg-gray-800 active:bg-gray-700 disabled:opacity-30 border border-dashed border-gray-600 rounded-xl text-sm text-gray-400 font-medium touch-manipulation"
+            >
+              + Importe libre
+            </button>
+          </div>
+
+          {/* Product grid */}
+          <div className="flex-1 overflow-y-auto scroll-touch p-3"
+               style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.75rem)" }}>
+            {!cuentaActiva ? (
+              <p className="text-gray-700 text-sm text-center py-16">Crea una cuenta para añadir productos</p>
+            ) : (
+              <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2">
+                {productosFiltrados.map((p) => (
+                  <button key={p.id} onClick={() => handleAgregar(p.nombre, p.precio)}
+                    className="flex flex-col items-center justify-center p-3 bg-gray-800 active:bg-gray-700 active:scale-95 rounded-2xl transition-transform touch-manipulation"
+                    style={{ minHeight: "72px" }}>
+                    <span className="text-sm font-semibold text-center leading-tight">{p.nombre}</span>
+                    <span className="text-amber-400 text-xs mt-1 tabular-nums font-medium">{p.precio.toFixed(2)}€</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ══════════════════════════════════════════════════
+          MODALES
+      ══════════════════════════════════════════════════ */}
+
+      {/* ── Modal: Cobro rápido ── */}
+      {modal === "cobro-rapido" && (
+        <div className="fixed inset-0 bg-black/90 flex flex-col z-50"
+             style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="flex-1 flex flex-col bg-gray-900 overflow-hidden">
+
+            {/* Cabecera */}
+            <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-gray-800">
+              <h2 className="text-lg font-bold">⚡ Cobro rápido</h2>
+              <button onClick={() => setModal(null)} className="w-9 h-9 rounded-full bg-gray-800 active:bg-gray-700 text-gray-400 touch-manipulation">✕</button>
+            </div>
+
+            {/* Categorías */}
+            <div className="shrink-0 flex gap-1.5 px-3 py-2 border-b border-gray-800 overflow-x-auto scroll-touch scrollbar-none">
+              {CATEGORIAS.map((cat) => (
+                <button key={cat} onClick={() => setCategoriaRapida(cat)}
+                  className={`shrink-0 px-3 py-1.5 rounded-lg text-sm font-semibold touch-manipulation ${
+                    categoriaRapida === cat ? "bg-amber-500 text-black" : "bg-gray-800 text-gray-400 active:bg-gray-700"
+                  }`}>
+                  {cat}
+                </button>
+              ))}
+            </div>
+
+            {/* Productos */}
+            <div className="flex-1 overflow-y-auto scroll-touch p-3">
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                {productosRapidosFiltrados.map((p) => {
+                  const cant = itemsRapidos.find((i) => i.nombre === p.nombre)?.cantidad ?? 0;
+                  return (
+                    <button key={p.id} onClick={() => agregarItemRapido(p.nombre, p.precio)}
+                      className={`relative flex flex-col items-center justify-center p-3 rounded-2xl active:scale-95 transition-transform touch-manipulation ${
+                        cant > 0 ? "bg-amber-900/60 border border-amber-700" : "bg-gray-800 active:bg-gray-700"
+                      }`}
+                      style={{ minHeight: "72px" }}>
+                      {cant > 0 && (
+                        <span className="absolute top-1.5 right-1.5 bg-amber-500 text-black text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center leading-none">
+                          {cant}
+                        </span>
+                      )}
+                      <span className="text-sm font-semibold text-center leading-tight">{p.nombre}</span>
+                      <span className="text-amber-400 text-xs mt-1 tabular-nums font-medium">{p.precio.toFixed(2)}€</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Items seleccionados + cobrar */}
+            <div className="shrink-0 border-t border-gray-800 bg-gray-950">
+              {itemsRapidos.length > 0 && (
+                <div className="px-4 pt-3 flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+                  {itemsRapidos.map((item) => (
+                    <div key={item.nombre} className="flex items-center gap-2">
+                      <span className="flex-1 text-sm truncate">{item.nombre}</span>
+                      <button onClick={() => restarItemRapido(item.nombre)} className="w-7 h-7 rounded-full bg-gray-700 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
+                      <span className="w-5 text-center text-sm tabular-nums font-bold shrink-0">{item.cantidad}</span>
+                      <button onClick={() => agregarItemRapido(item.nombre, item.precio)} className="w-7 h-7 rounded-full bg-gray-700 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
+                      <span className="w-14 text-right text-xs text-amber-400 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="px-4 py-3 flex flex-col gap-2">
+                {itemsRapidos.length === 0 && (
+                  <p className="text-center text-gray-600 text-sm py-1">Toca un producto para añadirlo</p>
+                )}
+                <div className="flex justify-between items-baseline px-1">
+                  <span className="text-gray-400 text-sm uppercase tracking-wider">Total</span>
+                  <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalRapido.toFixed(2)}€</span>
+                </div>
+                <button
+                  onClick={handleCobrarRapido}
+                  disabled={cobrando || itemsRapidos.length === 0}
+                  className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-30 disabled:cursor-not-allowed rounded-2xl font-bold text-base touch-manipulation"
+                >
+                  {cobrando ? "Guardando…" : `Cobrar ${totalRapido.toFixed(2)}€`}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Lista de compra ── */}
+      {modal === "lista-compra" && (
+        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
+             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="bg-gray-900 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-md flex flex-col" style={{ maxHeight: "85dvh" }}>
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mt-3 sm:hidden" />
+            <div className="flex items-center justify-between px-5 pt-4 pb-3 shrink-0">
+              <h2 className="text-xl font-bold">🛒 Lista de compra</h2>
+              <button onClick={() => setModal(null)} className="w-9 h-9 rounded-full bg-gray-800 active:bg-gray-700 text-gray-400 text-sm touch-manipulation">✕</button>
+            </div>
+
+            {/* Input añadir */}
+            <div className="shrink-0 flex gap-2 px-4 pb-3">
+              <input
+                ref={inputCompraRef}
+                value={nuevoItemCompra}
+                onChange={(e) => setNuevoItemCompra(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") agregarItemCompra(); }}
+                placeholder="Añadir artículo…"
+                className="flex-1 bg-gray-800 border border-gray-700 focus:border-amber-500 rounded-xl px-4 py-3 outline-none text-sm"
+                style={{ fontSize: "16px" }}
+              />
+              <button
+                onClick={agregarItemCompra}
+                disabled={!nuevoItemCompra.trim()}
+                className="w-12 bg-amber-500 active:bg-amber-600 disabled:opacity-30 rounded-xl font-bold text-lg touch-manipulation"
+              >+</button>
+            </div>
+
+            {/* Lista */}
+            <div className="flex-1 overflow-y-auto scroll-touch px-4 flex flex-col gap-1.5 pb-2">
+              {listaCompra.length === 0 ? (
+                <p className="text-gray-600 text-sm text-center py-10">La lista está vacía</p>
+              ) : (
+                listaCompra.map((item, idx) => (
+                  <div key={idx} className="flex items-center gap-3 bg-gray-800 rounded-xl px-4 py-3">
+                    <button
+                      onClick={() => toggleItemCompra(idx)}
+                      className={`w-6 h-6 rounded-full border-2 shrink-0 flex items-center justify-center touch-manipulation transition-colors ${
+                        item.hecho ? "bg-green-500 border-green-500 text-white" : "border-gray-600 active:border-green-500"
+                      }`}
+                    >
+                      {item.hecho && <span className="text-xs font-bold">✓</span>}
+                    </button>
+                    <span className={`flex-1 text-sm ${item.hecho ? "line-through text-gray-600" : "text-white"}`}>{item.texto}</span>
+                    <button onClick={() => eliminarItemCompra(idx)} className="w-7 h-7 rounded-lg bg-gray-700 active:bg-red-900 text-gray-500 active:text-red-400 text-sm shrink-0 touch-manipulation">×</button>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Acciones */}
+            <div className="shrink-0 border-t border-gray-800 px-4 pt-3 pb-4 flex flex-col gap-2">
+              {listaCompra.some((i) => i.hecho) && (
+                <button onClick={borrarCompletados} className="w-full py-3 bg-gray-800 active:bg-gray-700 rounded-xl text-sm text-gray-400 touch-manipulation">
+                  Borrar completados ({listaCompra.filter((i) => i.hecho).length})
+                </button>
+              )}
+              <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-800 active:bg-gray-700 rounded-xl text-gray-400 touch-manipulation">Cerrar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Importe libre ── */}
+      {modal === "libre" && cuentaActiva && (
+        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
+             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="bg-gray-900 rounded-t-3xl sm:rounded-3xl p-5 w-full sm:max-w-sm flex flex-col gap-3">
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto sm:hidden mb-1" />
+            <h2 className="text-xl font-bold text-center">Importe libre</h2>
+            <input
+              value={libreNombre}
+              onChange={(e) => setLibreNombre(e.target.value)}
+              placeholder="Descripción (opcional)"
+              className="bg-gray-800 border border-gray-700 focus:border-amber-500 rounded-xl px-4 py-3 outline-none text-sm"
+              style={{ fontSize: "16px" }}
+            />
+            <div className="bg-gray-800 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">
+              {libreImporte || "0"}€
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {["1","2","3","4","5","6","7","8","9",".","0","⌫"].map((d, i) => (
+                <button key={i} onClick={() => {
+                  if (d === "⌫") { setLibreImporte((e) => e.slice(0, -1)); return; }
+                  if (d === "." && libreImporte.includes(".")) return;
+                  if ((libreImporte.split(".")[1]?.length ?? 0) >= 2) return;
+                  setLibreImporte((e) => e + d);
+                }} className="py-4 bg-gray-800 active:bg-gray-600 rounded-xl font-semibold text-xl touch-manipulation">
+                  {d}
+                </button>
+              ))}
+            </div>
+            <button onClick={handleAgregarLibre} disabled={!libreImporte || parseFloat(libreImporte) <= 0}
+              className="w-full py-4 bg-amber-500 active:bg-amber-600 disabled:opacity-30 disabled:cursor-not-allowed rounded-2xl font-bold text-base touch-manipulation">
+              Añadir al ticket
+            </button>
+            <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-800 active:bg-gray-700 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Vista previa ticket ── */}
+      {modal === "ticket" && cuentaActiva && (
+        <div className="fixed inset-0 bg-black/90 flex flex-col items-center justify-center z-50 p-4"
+             style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="w-full max-w-xs flex justify-end mb-3">
+            <button onClick={() => setModal(null)}
+              className="w-8 h-8 rounded-full bg-gray-800 active:bg-gray-700 text-gray-400 text-sm touch-manipulation">
+              ✕
+            </button>
+          </div>
+          <div className="w-full max-w-xs bg-white text-gray-900 rounded-2xl overflow-hidden shadow-2xl"
+               style={{ fontFamily: "ui-monospace, monospace" }}>
+            <div className="text-center py-5 px-4 border-b border-dashed border-gray-300">
+              <p className="text-xl font-bold tracking-widest uppercase">El Timbre</p>
+              <p className="text-xs text-gray-400 mt-1">
+                {new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "long", year: "numeric" })}
+                {" · "}
+                {new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+              </p>
+              <p className="text-sm font-semibold mt-2">{cuentaActiva.nombre}</p>
+            </div>
+            <div className="px-4 py-3 flex flex-col gap-1.5">
+              {cuentaActiva.items.map((item) => (
+                <div key={item.nombre} className="flex justify-between items-baseline text-sm">
+                  <span className="flex-1 truncate">{item.nombre}</span>
+                  <span className="text-gray-400 text-xs mx-2 shrink-0">{item.cantidad}×{item.precio.toFixed(2)}</span>
+                  <span className="font-semibold tabular-nums shrink-0">{(item.precio * item.cantidad).toFixed(2)}€</span>
+                </div>
+              ))}
+            </div>
+            <div className="mx-4 border-t border-dashed border-gray-300" />
+            <div className="flex justify-between items-center px-4 py-3">
+              <span className="font-bold text-base tracking-wider uppercase">Total</span>
+              <span className="font-bold text-2xl tabular-nums">{cuentaActiva.total.toFixed(2)}€</span>
+            </div>
+            <div className="text-center py-3 border-t border-dashed border-gray-300">
+              <p className="text-xs text-gray-400">¡Gracias por tu visita!</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Cobro parcial ── */}
+      {modal === "parcial" && cuentaActiva && (
+        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
+             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="bg-gray-900 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm flex flex-col" style={{ maxHeight: "85dvh" }}>
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mt-3 sm:hidden" />
+            <div className="px-5 pt-4 pb-3 shrink-0">
+              <h2 className="text-xl font-bold">Cobro parcial</h2>
+              <p className="text-gray-400 text-sm mt-0.5">{cuentaActiva.nombre}</p>
+            </div>
+            <div className="flex-1 overflow-y-auto scroll-touch px-4 flex flex-col gap-2 pb-2">
+              {seleccionParcial.map((linea, idx) => (
+                <div key={linea.nombre} className="flex items-center gap-2 bg-gray-800 rounded-xl px-3 py-2.5">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">{linea.nombre}</p>
+                    <p className="text-xs text-gray-500">{linea.precio.toFixed(2)}€/u · hay {linea.max}</p>
+                  </div>
+                  <button
+                    onClick={() => setSeleccionParcial((prev) => prev.map((l, i) => i === idx ? { ...l, cobrar: Math.max(0, l.cobrar - 1) } : l))}
+                    className="w-8 h-8 rounded-full bg-gray-700 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation"
+                  >−</button>
+                  <span className={`w-6 text-center text-sm tabular-nums font-bold shrink-0 ${linea.cobrar === 0 ? "text-gray-600" : "text-white"}`}>
+                    {linea.cobrar}
+                  </span>
+                  <button
+                    onClick={() => setSeleccionParcial((prev) => prev.map((l, i) => i === idx ? { ...l, cobrar: Math.min(l.max, l.cobrar + 1) } : l))}
+                    className="w-8 h-8 rounded-full bg-gray-700 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation"
+                  >+</button>
+                  <span className={`w-14 text-right text-sm tabular-nums shrink-0 font-medium ${linea.cobrar === 0 ? "text-gray-600" : "text-amber-400"}`}>
+                    {(linea.precio * linea.cobrar).toFixed(2)}€
+                  </span>
+                </div>
+              ))}
+            </div>
+            <div className="shrink-0 border-t border-gray-800 px-5 py-3 flex justify-between items-baseline">
+              <span className="text-gray-400 text-sm uppercase tracking-wider">A cobrar</span>
+              <span className="text-2xl font-bold text-amber-400 tabular-nums">
+                {seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€
+              </span>
+            </div>
+            <div className="shrink-0 px-4 pb-4 flex flex-col gap-2">
+              <button
+                onClick={handleCobrarParcial}
+                disabled={cobrando || seleccionParcial.every((l) => l.cobrar === 0)}
+                className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-30 rounded-2xl font-bold text-base touch-manipulation"
+              >
+                {cobrando ? "Guardando…" : `Cobrar ${seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€`}
+              </button>
+              <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-800 active:bg-gray-700 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Cobrar ── */}
+      {modal === "cobrar" && cuentaActiva && (
+        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
+             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="bg-gray-900 rounded-t-3xl sm:rounded-3xl p-6 w-full sm:max-w-sm flex flex-col gap-4">
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto sm:hidden mb-1" />
+            <h2 className="text-xl font-bold text-center">Cobrar cuenta</h2>
+            <p className="text-center text-gray-400 font-medium">{cuentaActiva.nombre}</p>
+            <p className="text-center text-5xl font-bold text-amber-400 tabular-nums py-2">{cuentaActiva.total.toFixed(2)}€</p>
+            <button onClick={handleCobrar} disabled={cobrando}
+              className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-50 rounded-2xl font-bold text-lg touch-manipulation">
+              {cobrando ? "Guardando…" : "Confirmar cobro"}
+            </button>
+            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-800 active:bg-gray-700 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Dividir ── */}
+      {modal === "dividir" && cuentaActiva && (
+        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
+             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="bg-gray-900 rounded-t-3xl sm:rounded-3xl p-6 w-full sm:max-w-sm flex flex-col gap-4">
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto sm:hidden mb-1" />
+            <h2 className="text-xl font-bold text-center">Dividir cuenta</h2>
+            <p className="text-center text-gray-400">Total: <span className="text-white font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
+            <div className="flex items-center justify-center gap-6 py-2">
+              <button onClick={() => setPersonas((p) => Math.max(2, p - 1))} className="w-14 h-14 rounded-full bg-gray-700 active:bg-gray-600 text-2xl font-bold touch-manipulation">−</button>
+              <span className="text-4xl font-bold w-12 text-center tabular-nums">{personas}</span>
+              <button onClick={() => setPersonas((p) => p + 1)} className="w-14 h-14 rounded-full bg-gray-700 active:bg-gray-600 text-2xl font-bold touch-manipulation">+</button>
+            </div>
+            <p className="text-center text-gray-500 text-sm">{personas} personas</p>
+            <div className="bg-gray-800 rounded-2xl p-5 text-center">
+              <p className="text-gray-400 text-sm mb-1 uppercase tracking-wider">Cada uno paga</p>
+              <p className="text-5xl font-bold text-amber-400 tabular-nums">{(cuentaActiva.total / personas).toFixed(2)}€</p>
+            </div>
+            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-800 active:bg-gray-700 rounded-2xl text-gray-400 touch-manipulation">Cerrar</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Cambio ── */}
+      {modal === "cambio" && cuentaActiva && (
+        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
+             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="bg-gray-900 rounded-t-3xl sm:rounded-3xl p-5 w-full sm:max-w-sm flex flex-col gap-3">
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto sm:hidden mb-1" />
+            <h2 className="text-xl font-bold text-center">Calcular cambio</h2>
+            <p className="text-center text-gray-400">Total: <span className="text-white font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
+            <div className="bg-gray-800 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">{efectivo || "0"}€</div>
+            <div className="grid grid-cols-3 gap-2">
+              {["1","2","3","4","5","6","7","8","9",".","0","⌫"].map((d, i) => (
+                <button key={i} onClick={() => {
+                  if (d === "⌫") { setEfectivo((e) => e.slice(0, -1)); return; }
+                  if (d === "." && efectivo.includes(".")) return;
+                  if ((efectivo.split(".")[1]?.length ?? 0) >= 2) return;
+                  setEfectivo((e) => e + d);
+                }} className="py-4 bg-gray-800 active:bg-gray-600 rounded-xl font-semibold text-xl touch-manipulation">{d}</button>
+              ))}
+            </div>
+            {parseFloat(efectivo || "0") > 0 && (
+              <div className="bg-gray-800 rounded-2xl p-4 text-center">
+                <p className="text-gray-400 text-xs uppercase tracking-wider mb-1">Cambio</p>
+                <p className={`text-4xl font-bold tabular-nums ${cambio >= 0 ? "text-green-400" : "text-red-400"}`}>{cambio.toFixed(2)}€</p>
+              </div>
+            )}
+            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-800 active:bg-gray-700 rounded-2xl text-gray-400 touch-manipulation">Cerrar</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Juntar cuentas ── */}
+      {modal === "juntar" && cuentaActiva && (
+        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
+             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="bg-gray-900 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm flex flex-col" style={{ maxHeight: "75dvh" }}>
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mt-3 sm:hidden" />
+            <div className="px-5 pt-4 pb-2 shrink-0">
+              <h2 className="text-xl font-bold">Juntar con…</h2>
+              <p className="text-gray-400 text-sm mt-0.5">Los artículos se añadirán a <span className="text-white font-semibold">«{cuentaActiva.nombre}»</span></p>
+            </div>
+            <div className="flex-1 overflow-y-auto scroll-touch px-4 py-2 flex flex-col gap-2">
+              {cuentasParaJuntar.length === 0 ? (
+                <p className="text-gray-600 text-sm text-center py-8">No hay otras cuentas abiertas</p>
+              ) : (
+                cuentasParaJuntar.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setIdCuentaJuntar(c.id === idCuentaJuntar ? null : c.id)}
+                    className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl border-2 touch-manipulation transition-colors ${
+                      c.id === idCuentaJuntar
+                        ? "bg-purple-900/60 border-purple-500 text-white"
+                        : "bg-gray-800 border-gray-800 active:border-gray-600 text-gray-300"
+                    }`}
+                  >
+                    <span className="font-semibold text-sm">{c.nombre}</span>
+                    <span className="text-amber-400 tabular-nums text-sm">{c.total.toFixed(2)}€</span>
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="shrink-0 border-t border-gray-800 px-4 pt-3 pb-4 flex flex-col gap-2">
+              <button
+                onClick={handleJuntarCuentas}
+                disabled={!idCuentaJuntar || cobrando}
+                className="w-full py-4 bg-purple-700 active:bg-purple-600 disabled:opacity-30 rounded-2xl font-bold text-base touch-manipulation"
+              >
+                {cobrando ? "Juntando…" : idCuentaJuntar
+                  ? `Juntar con «${cuentas.find((c) => c.id === idCuentaJuntar)?.nombre}»`
+                  : "Selecciona una cuenta"}
+              </button>
+              <button onClick={() => { setModal(null); setIdCuentaJuntar(null); }} className="w-full py-3 bg-gray-800 active:bg-gray-700 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal: Historial ── */}
+      {modal === "historial" && (
+        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
+             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="bg-gray-900 rounded-t-3xl sm:rounded-3xl w-full sm:max-w-md flex flex-col" style={{ maxHeight: "85dvh" }}>
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mt-3 sm:hidden" />
+            <div className="flex items-center justify-between px-5 pt-4 pb-3 shrink-0">
+              <h2 className="text-xl font-bold">Historial del día</h2>
+              <button onClick={() => { setModal(null); setConfirmandoCierre(false); }} className="w-9 h-9 rounded-full bg-gray-800 active:bg-gray-700 text-gray-400 text-sm touch-manipulation">✕</button>
+            </div>
+            <div className="flex-1 overflow-y-auto scroll-touch px-4 pb-2 flex flex-col gap-3">
+              {cobros.length === 0 ? (
+                <p className="text-gray-600 text-sm text-center py-10">No hay cuentas cobradas aún</p>
+              ) : (() => {
+                const sesiones = cobros.reduce<{ id: string; cobros: Cobro[] }[]>((acc, cobro) => {
+                  const sid = cobro.sesion_id ?? "sin-sesion";
+                  const existente = acc.find((s) => s.id === sid);
+                  if (existente) existente.cobros.push(cobro);
+                  else acc.push({ id: sid, cobros: [cobro] });
+                  return acc;
+                }, []);
+
+                return sesiones.map((sesion, si) => {
+                  const totalSesion = sesion.cobros.reduce((s, c) => s + Number(c.total), 0);
+                  const horaInicio = sesion.id !== "sin-sesion"
+                    ? new Date(parseInt(sesion.id)).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })
+                    : null;
+                  return (
+                    <div key={sesion.id}>
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                          Sesión {si + 1}{horaInicio ? ` · desde ${horaInicio}` : ""}
+                        </span>
+                        <div className="flex-1 h-px bg-gray-800" />
+                      </div>
+                      <div className="flex flex-col gap-1.5">
+                        {sesion.cobros.map((cobro) => {
+                          const expandido = cobroExpandido === cobro.id;
+                          return (
+                            <div key={cobro.id} className="bg-gray-800 rounded-2xl overflow-hidden">
+                              {/* Fila principal: toca para expandir */}
+                              <button
+                                onClick={() => setCobroExpandido(expandido ? null : cobro.id)}
+                                className="w-full flex items-start justify-between gap-3 px-4 py-3 touch-manipulation active:bg-gray-700 text-left"
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-semibold text-sm">{cobro.nombre_cuenta}</p>
+                                  <p className="text-gray-500 text-xs mt-0.5">
+                                    {new Date(cobro.created_at).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+                                    {" · "}
+                                    {cobro.items.length} artículo{cobro.items.length !== 1 ? "s" : ""}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className="text-amber-400 font-bold tabular-nums">{Number(cobro.total).toFixed(2)}€</span>
+                                  <span className={`text-gray-500 text-xs transition-transform ${expandido ? "rotate-180" : ""}`}>▾</span>
+                                </div>
+                              </button>
+
+                              {/* Ticket expandido */}
+                              {expandido && (
+                                <div className="border-t border-gray-700 px-4 py-3"
+                                     style={{ fontFamily: "ui-monospace, monospace" }}>
+                                  <div className="flex flex-col gap-1">
+                                    {cobro.items.map((item) => (
+                                      <div key={item.nombre} className="flex justify-between items-baseline text-xs">
+                                        <span className="flex-1 truncate text-gray-300">{item.nombre}</span>
+                                        <span className="text-gray-500 mx-2 shrink-0">{item.cantidad}×{item.precio.toFixed(2)}</span>
+                                        <span className="text-white tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className="mt-2 pt-2 border-t border-dashed border-gray-700 flex justify-between items-baseline">
+                                    <span className="text-gray-500 text-xs uppercase tracking-wider">Total</span>
+                                    <span className="text-amber-400 font-bold tabular-nums text-sm">{Number(cobro.total).toFixed(2)}€</span>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <div className="flex justify-between px-1 py-1 text-xs text-gray-500">
+                          <span>{sesion.cobros.length} cobro{sesion.cobros.length !== 1 ? "s" : ""}</span>
+                          <span className="font-semibold text-gray-400">{totalSesion.toFixed(2)}€</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+            <div className="shrink-0 border-t border-gray-800 px-5 py-3 flex justify-between items-baseline">
+              <span className="text-gray-400 text-sm">{cobros.length} cuenta{cobros.length !== 1 ? "s" : ""} cobrada{cobros.length !== 1 ? "s" : ""}</span>
+              <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalDia.toFixed(2)}€</span>
+            </div>
+            <div className="shrink-0 px-4 pt-1 pb-4 flex flex-col gap-2">
+              {!confirmandoCierre ? (
+                <>
+                  <button onClick={() => setConfirmandoCierre(true)} className="w-full py-4 bg-red-900/60 active:bg-red-800/80 text-red-300 rounded-2xl text-sm font-semibold touch-manipulation">Cerrar día</button>
+                </>
+              ) : (
+                <>
+                  <p className="text-center text-sm text-gray-400 pb-1">¿Seguro? Se borrará todo el historial de hoy.</p>
+                  <button onClick={handleCerrarDia} className="w-full py-4 bg-red-600 active:bg-red-700 text-white rounded-2xl text-sm font-bold touch-manipulation">Sí, cerrar y borrar historial</button>
+                  <button onClick={() => setConfirmandoCierre(false)} className="w-full py-4 bg-gray-800 active:bg-gray-700 text-gray-400 rounded-2xl text-sm touch-manipulation">Cancelar</button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
