@@ -19,7 +19,9 @@ export function useCobros() {
       })
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    const poll = setInterval(fetchCobros, 5000);
+
+    return () => { supabase.removeChannel(channel); clearInterval(poll); };
   }, []);
 
   async function fetchCobros() {

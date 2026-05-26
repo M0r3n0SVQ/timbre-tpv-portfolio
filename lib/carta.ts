@@ -23,7 +23,7 @@ export const PRODUCTOS: Producto[] = [
   { id: 'p16', nombre: 'Melva morrón',          precio: 3.40, categoria: 'Montaditos' },
   { id: 'p17', nombre: 'Bacalao salmorejo',      precio: 3.40, categoria: 'Montaditos' },
   { id: 'p18', nombre: 'Salmón guacamole',       precio: 3.40, categoria: 'Montaditos' },
-  { id: 'p19', nombre: 'Chorizo picante',        precio: 3.00, categoria: 'Montaditos' },
+  { id: 'p19', nombre: 'Chorizo picante',        precio: 3.20, categoria: 'Montaditos' },
   { id: 'p20', nombre: 'Ch. picante roque',      precio: 3.40, categoria: 'Montaditos' },
   { id: 'p21', nombre: 'Mechá queso mojo',       precio: 3.40, categoria: 'Montaditos' },
   { id: 'p22', nombre: 'Chicharrón q. mojo',     precio: 3.40, categoria: 'Montaditos' },
@@ -33,7 +33,7 @@ export const PRODUCTOS: Producto[] = [
   { id: 'p26', nombre: 'Lomo al whisky',         precio: 3.40, categoria: 'Montaditos' },
   { id: 'p27', nombre: 'Piripi',                 precio: 3.40, categoria: 'Montaditos' },
   { id: 'p28', nombre: 'Serranito',              precio: 3.40, categoria: 'Montaditos' },
-  { id: 'p29', nombre: 'Caña salchichón q.',     precio: 3.20, categoria: 'Montaditos' },
+  { id: 'p29', nombre: 'Caña salchichón queso',  precio: 3.20, categoria: 'Montaditos' },
   // PATATAS
   { id: 'p43', nombre: 'Patatas hispalanas', precio: 1.30, categoria: 'Patatas' },
   { id: 'p44', nombre: 'Fogón real',         precio: 1.10, categoria: 'Patatas' },
@@ -51,9 +51,11 @@ export const PRODUCTOS: Producto[] = [
   { id: 'p40', nombre: 'Chicharrón de Cádiz',    precio: 3.00, categoria: 'Tapas' },
   { id: 'p41', nombre: 'Morcilla hígado',        precio: 1.50, categoria: 'Tapas' },
   { id: 'p42', nombre: 'Provolone',              precio: 4.50, categoria: 'Tapas' },
-  { id: 'p45', nombre: 'Caracoles',              precio: 3.40, categoria: 'Tapas' },
+  { id: 'p45', nombre: 'Caracoles',              precio: 2.50, categoria: 'Tapas' },
   { id: 'p46', nombre: 'Bacalao salmorejo',      precio: 3.40, categoria: 'Tapas' },
   { id: 'p47', nombre: 'Salmón guacamole',       precio: 3.40, categoria: 'Tapas' },
+  { id: 'p48', nombre: 'Chorizo picante',        precio: 3.00, categoria: 'Tapas' },
+  { id: 'p49', nombre: 'Tortilla whisky',        precio: 3.00, categoria: 'Tapas' },
 ];
 
 export const CATEGORIAS = Array.from(new Set(PRODUCTOS.map((p) => p.categoria)));

@@ -22,8 +22,8 @@ body {
   /* Smooth font rendering */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #030712; /* gray-950 */
-  color: #f9fafb;
+  background: #f9fafb; /* gray-50 */
+  color: #111827;
 }
 
 /* ── Scrollable areas ────────────────────────────── */

@@ -19,3 +19,14 @@ CREATE TABLE cobros (
 );
 
 ALTER TABLE cobros DISABLE ROW LEVEL SECURITY;
+
+-- Sesión activa (turno en curso, compartida entre dispositivos)
+CREATE TABLE sesiones (
+  id         TEXT PRIMARY KEY,
+  turno      TEXT NOT NULL CHECK (turno IN ('mañana', 'tarde')),
+  fecha      TEXT NOT NULL,
+  activa     BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE sesiones DISABLE ROW LEVEL SECURITY;

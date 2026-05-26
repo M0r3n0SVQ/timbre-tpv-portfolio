@@ -20,3 +20,11 @@ export type Cobro = {
   created_at: string;
   sesion_id: string | null;
 };
+
+export type Sesion = {
+  id: string;
+  turno: "mañana" | "tarde";
+  fecha: string;
+  activa: boolean;
+  created_at: string;
+};

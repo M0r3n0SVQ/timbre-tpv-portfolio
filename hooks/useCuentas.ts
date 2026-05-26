@@ -19,7 +19,9 @@ export function useCuentas() {
       })
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    const poll = setInterval(fetchCuentas, 5000);
+
+    return () => { supabase.removeChannel(channel); clearInterval(poll); };
   }, []);
 
   async function fetchCuentas() {
