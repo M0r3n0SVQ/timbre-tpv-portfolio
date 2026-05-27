@@ -23,7 +23,7 @@ export const PRODUCTOS: Producto[] = [
   { id: 'p16', nombre: 'Melva morrón',          precio: 3.40, categoria: 'Montaditos' },
   { id: 'p17', nombre: 'Bacalao salmorejo',      precio: 3.40, categoria: 'Montaditos' },
   { id: 'p18', nombre: 'Salmón guacamole',       precio: 3.40, categoria: 'Montaditos' },
-  { id: 'p19', nombre: 'Chorizo picante',        precio: 3.20, categoria: 'Montaditos' },
+  { id: 'p19', nombre: 'Chorizo picante',        precio: 3.00, categoria: 'Montaditos' },
   { id: 'p20', nombre: 'Ch. picante roque',      precio: 3.40, categoria: 'Montaditos' },
   { id: 'p21', nombre: 'Mechá queso mojo',       precio: 3.40, categoria: 'Montaditos' },
   { id: 'p22', nombre: 'Chicharrón q. mojo',     precio: 3.40, categoria: 'Montaditos' },

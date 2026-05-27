@@ -30,3 +30,14 @@ CREATE TABLE sesiones (
 );
 
 ALTER TABLE sesiones DISABLE ROW LEVEL SECURITY;
+
+-- Ítems de cocina ya servidos (para la pantalla de cocina)
+CREATE TABLE comandas_servidas (
+  cuenta_id        TEXT NOT NULL,
+  item_nombre      TEXT NOT NULL,
+  cantidad_servida INT NOT NULL DEFAULT 0,
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (cuenta_id, item_nombre)
+);
+
+ALTER TABLE comandas_servidas DISABLE ROW LEVEL SECURITY;

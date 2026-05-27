@@ -4,16 +4,18 @@ import { useState, useEffect, useRef } from "react";
 import { useCuentas } from "@/hooks/useCuentas";
 import { useCobros } from "@/hooks/useCobros";
 import { useSesion } from "@/hooks/useSesion";
+import { useComandas } from "@/hooks/useComandas";
 import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import type { Cobro, Cuenta, Item } from "@/lib/types";
 
-type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | null;
+type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
 type LineaParcial = { nombre: string; precio: number; max: number; cobrar: number };
 
 export default function Page() {
   const { cuentas, loading, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, refetch: refetchCuentas } = useCuentas();
   const { cobros, cobrarCuenta, cerrarDia, refetch: refetchCobros } = useCobros();
   const { sesion, loading: loadingSesion, iniciarTurno, cerrarTurno } = useSesion();
+  const { servidas, servirUno, servirTodo, limpiarCuenta } = useComandas();
 
   const [idActiva, setIdActiva] = useState<string | null>(null);
 
@@ -91,6 +93,21 @@ export default function Page() {
   const itemsCompraPendientes = listaCompra.filter((i) => !i.hecho).length;
   const cuentasParaJuntar = cuentas.filter((c) => c.id !== idActiva);
 
+  const CATS_COCINA = ["Montaditos", "Tapas"];
+  const pedidosPendientes = cuentas.flatMap((cuenta) =>
+    cuenta.items
+      .filter((item) => {
+        const p = PRODUCTOS.find((pr) => pr.nombre === item.nombre);
+        return p && CATS_COCINA.includes(p.categoria);
+      })
+      .map((item) => {
+        const servida = servidas.find((s) => s.cuenta_id === cuenta.id && s.item_nombre === item.nombre);
+        const pendiente = item.cantidad - (servida?.cantidad_servida ?? 0);
+        return { cuentaId: cuenta.id, cuentaNombre: cuenta.nombre, item, pendiente };
+      })
+      .filter((x) => x.pendiente > 0)
+  );
+
   // ── Handlers ──────────────────────────────────────────────
 
   function handleRefrescar() {
@@ -116,6 +133,7 @@ export default function Page() {
   async function handleBorrarCuenta() {
     if (!cuentaActiva) return;
     await eliminarCuenta(cuentaActiva.id);
+    await limpiarCuenta(cuentaActiva.id);
     const siguiente = cuentas.find((c) => c.id !== cuentaActiva.id);
     setIdActiva(siguiente?.id ?? null);
     setConfirmandoBorrar(false);
@@ -176,6 +194,7 @@ export default function Page() {
     setCobrando(true);
     await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion");
     await eliminarCuenta(cuentaActiva.id);
+    await limpiarCuenta(cuentaActiva.id);
     const siguiente = cuentas.find((c) => c.id !== cuentaActiva.id);
     setIdActiva(siguiente?.id ?? null);
     setModal(null);
@@ -212,6 +231,7 @@ export default function Page() {
       .filter((i) => i.cantidad > 0);
     if (restantes.length === 0) {
       await eliminarCuenta(cuentaActiva.id);
+      await limpiarCuenta(cuentaActiva.id);
       setIdActiva(cuentas.find((c) => c.id !== cuentaActiva.id)?.id ?? null);
     } else {
       await actualizarCuenta(cuentaActiva.id, restantes);
@@ -339,6 +359,22 @@ export default function Page() {
               <span className="capitalize">{sesion.turno}</span>
             </div>
           )}
+
+          {/* Cocina */}
+          <button
+            onClick={() => setModal("cocina")}
+            title="Cocina"
+            className="relative shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+            </svg>
+            {pedidosPendientes.length > 0 && (
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-bold rounded-full min-w-[16px] h-4 px-0.5 flex items-center justify-center leading-none">
+                {pedidosPendientes.length}
+              </span>
+            )}
+          </button>
 
           {/* Historial: icono + badge, sin texto */}
           <button
@@ -1179,6 +1215,75 @@ export default function Page() {
           </div>
         </div>
       )}
+      {/* ── Modal Cocina ── */}
+      {modal === "cocina" && (
+        <div className="absolute inset-0 z-50 bg-gray-50 flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+          <div className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200 shrink-0">
+            <button onClick={() => setModal(null)} className="w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 touch-manipulation">
+              <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <h2 className="font-bold text-gray-900 flex-1 text-base">Cocina</h2>
+            {pedidosPendientes.length > 0 && (
+              <span className="bg-red-500 text-white text-xs font-bold rounded-full px-2.5 py-0.5">
+                {pedidosPendientes.length} pendiente{pedidosPendientes.length !== 1 ? "s" : ""}
+              </span>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            {pedidosPendientes.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+                <svg className="w-14 h-14 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                </svg>
+                <p className="text-sm">Todo servido</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {Array.from(new Set(pedidosPendientes.map((p) => p.cuentaId))).map((cuentaId) => {
+                  const items = pedidosPendientes.filter((p) => p.cuentaId === cuentaId);
+                  return (
+                    <div key={cuentaId} className="bg-white rounded-2xl border border-gray-200 overflow-hidden shadow-sm">
+                      <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100">
+                        <span className="font-bold text-sm text-amber-700">{items[0].cuentaNombre}</span>
+                      </div>
+                      <div className="flex flex-col divide-y divide-gray-100">
+                        {items.map(({ item, pendiente }) => (
+                          <div key={item.nombre} className="flex items-center gap-3 px-4 py-3">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-gray-900 truncate">{item.nombre}</p>
+                            </div>
+                            <span className="text-xl font-bold text-gray-700 tabular-nums w-8 text-center shrink-0">×{pendiente}</span>
+                            <div className="flex gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => servirUno(cuentaId, item.nombre)}
+                                className="w-10 h-10 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-700 touch-manipulation text-xl font-bold"
+                              >−</button>
+                              <button
+                                type="button"
+                                onClick={() => servirTodo(cuentaId, item.nombre, item.cantidad)}
+                                className="w-10 h-10 flex items-center justify-center rounded-xl bg-green-500 active:bg-green-600 text-white touch-manipulation"
+                              >
+                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                                </svg>
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── Overlay: Splash / Inicio de turno ── */}
       {(loadingSesion || !sesion) && (
         <div className="absolute inset-0 z-[100] bg-gray-50 flex flex-col items-center justify-center px-8 gap-8"

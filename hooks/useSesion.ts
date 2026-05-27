@@ -20,11 +20,9 @@ export function useSesion() {
   }, []);
 
   async function cargarSesion() {
-    const hoy = new Date().toDateString();
     const { data } = await supabase
       .from("sesiones")
       .select("*")
-      .eq("fecha", hoy)
       .eq("activa", true)
       .order("created_at", { ascending: false })
       .limit(1)
