@@ -85,5 +85,12 @@ export function useCuentas() {
     return true;
   }
 
-  return { cuentas, loading, error, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, refetch: fetchCuentas };
+  async function marcarPagada(id: string) {
+    setCuentas((prev) => prev.map((c) => c.id === id ? { ...c, pagada: true } : c));
+    const { error } = await supabase.from("cuentas").update({ pagada: true }).eq("id", id);
+    if (error) { setError(error.message); fetchCuentas(); return false; }
+    return true;
+  }
+
+  return { cuentas, loading, error, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, refetch: fetchCuentas };
 }

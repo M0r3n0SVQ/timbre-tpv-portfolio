@@ -6,14 +6,15 @@ import { useCobros } from "@/hooks/useCobros";
 import { useSesion } from "@/hooks/useSesion";
 import { useComandas } from "@/hooks/useComandas";
 import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
+import { supabase } from "@/lib/supabase";
 import type { Cobro, Cuenta, Item } from "@/lib/types";
 
 type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
 type LineaParcial = { nombre: string; precio: number; max: number; cobrar: number };
 
 export default function Page() {
-  const { cuentas, loading, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, refetch: refetchCuentas } = useCuentas();
-  const { cobros, cobrarCuenta, cerrarDia, refetch: refetchCobros } = useCobros();
+  const { cuentas, loading, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, refetch: refetchCuentas } = useCuentas();
+  const { cobros, cobrarCuenta, cerrarDia, restaurarCobros, refetch: refetchCobros } = useCobros();
   const { sesion, loading: loadingSesion, iniciarTurno, cerrarTurno } = useSesion();
   const { servidas, servirUno, servirTodo, limpiarCuenta } = useComandas();
 
@@ -31,6 +32,7 @@ export default function Page() {
 
   const [libreNombre, setLibreNombre] = useState("");
   const [libreImporte, setLibreImporte] = useState("");
+  const [libreCategoria, setLibreCategoria] = useState("");
 
   const [confirmandoCierreTurno, setConfirmandoCierreTurno] = useState(false);
 
@@ -47,6 +49,7 @@ export default function Page() {
   // Cobro rápido
   const [itemsRapidos, setItemsRapidos] = useState<Item[]>([]);
   const [categoriaRapida, setCategoriaRapida] = useState(CATEGORIAS[0]);
+  const [nombreRapido, setNombreRapido] = useState("");
 
   // Lista de compra
   const [listaCompra, setListaCompra] = useState<{ texto: string; hecho: boolean }[]>([]);
@@ -82,6 +85,46 @@ export default function Page() {
     localStorage.setItem("timbre-lista-compra", JSON.stringify(listaCompra));
   }, [listaCompra]);
 
+  // Backup automático en localStorage + Supabase
+  const [backupTimestamp, setBackupTimestamp] = useState<string | null>(null);
+  const backupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const raw = localStorage.getItem("timbre-backup-v1");
+    if (raw) { try { setBackupTimestamp(JSON.parse(raw).timestamp); } catch {} }
+  }, []);
+  useEffect(() => {
+    if (loading) return;
+    const ts = new Date().toISOString();
+    const datos = { cuentas, cobros, timestamp: ts };
+    // localStorage: inmediato
+    try {
+      localStorage.setItem("timbre-backup-v1", JSON.stringify(datos));
+      setBackupTimestamp(ts);
+    } catch {}
+    // Supabase: debounce 8s para no saturar
+    if (backupTimer.current) clearTimeout(backupTimer.current);
+    backupTimer.current = setTimeout(() => {
+      supabase.from("backups").upsert({ id: "ultimo", datos, updated_at: new Date().toISOString() }).then(() => {});
+    }, 8000);
+  }, [cuentas, cobros, loading]);
+
+  // Auto-eliminar cuentas pagadas cuando ya no tienen pendientes en cocina
+  useEffect(() => {
+    const pagadas = cuentas.filter((c) => c.pagada);
+    for (const cuenta of pagadas) {
+      const tienePendientes = cuenta.items.some((item) => {
+        const cat = PRODUCTOS.find((p) => p.nombre === item.nombre)?.categoria ?? item.categoria;
+        if (!cat || !CATS_COCINA.includes(cat)) return false;
+        const servida = servidas.find((s) => s.cuenta_id === cuenta.id && s.item_nombre === item.nombre);
+        return item.cantidad - (servida?.cantidad_servida ?? 0) > 0;
+      });
+      if (!tienePendientes) {
+        eliminarCuenta(cuenta.id);
+        limpiarCuenta(cuenta.id);
+      }
+    }
+  }, [cuentas, servidas]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Computed ───────────────────────────────────────────────
   const cuentaActiva = cuentas.find((c) => c.id === idActiva) ?? null;
   const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria);
@@ -91,22 +134,28 @@ export default function Page() {
   const sinItems = (cuentaActiva?.items.length ?? 0) === 0;
   const totalRapido = itemsRapidos.reduce((s, i) => s + i.precio * i.cantidad, 0);
   const itemsCompraPendientes = listaCompra.filter((i) => !i.hecho).length;
-  const cuentasParaJuntar = cuentas.filter((c) => c.id !== idActiva);
+  const cuentasParaJuntar = cuentas.filter((c) => c.id !== idActiva && !c.pagada);
+  const cuentasAbiertas = cuentas.filter((c) => !c.pagada);
 
   const CATS_COCINA = ["Montaditos", "Tapas"];
   const pedidosPendientes = cuentas.flatMap((cuenta) =>
     cuenta.items
       .filter((item) => {
-        const p = PRODUCTOS.find((pr) => pr.nombre === item.nombre);
-        return p && CATS_COCINA.includes(p.categoria);
+        const cat = item.categoria || PRODUCTOS.find((pr) => pr.nombre === item.nombre)?.categoria;
+        return cat && CATS_COCINA.includes(cat);
       })
       .map((item) => {
+        const categoria = (item.categoria || PRODUCTOS.find((pr) => pr.nombre === item.nombre)?.categoria) ?? "";
         const servida = servidas.find((s) => s.cuenta_id === cuenta.id && s.item_nombre === item.nombre);
         const pendiente = item.cantidad - (servida?.cantidad_servida ?? 0);
-        return { cuentaId: cuenta.id, cuentaNombre: cuenta.nombre, item, pendiente };
+        return { cuentaId: cuenta.id, cuentaNombre: cuenta.nombre, item, pendiente, categoria, pagada: !!cuenta.pagada };
       })
       .filter((x) => x.pendiente > 0)
-  );
+  ).sort((a, b) => {
+    const ta = a.item.added_at ? new Date(a.item.added_at).getTime() : 0;
+    const tb = b.item.added_at ? new Date(b.item.added_at).getTime() : 0;
+    return ta - tb;
+  });
 
   // ── Handlers ──────────────────────────────────────────────
 
@@ -139,14 +188,16 @@ export default function Page() {
     setConfirmandoBorrar(false);
   }
 
-  async function handleAgregar(nombre: string, precio: number) {
+  async function handleAgregar(nombre: string, precio: number, categoria?: string) {
     if (!cuentaActiva) return;
+    const now = new Date().toISOString();
     const existe = cuentaActiva.items.find((i) => i.nombre === nombre);
+    const extra = categoria ? { categoria } : {};
     const items = existe
       ? cuentaActiva.items.map((i) =>
-          i.nombre === nombre ? { ...i, cantidad: i.cantidad + 1 } : i
+          i.nombre === nombre ? { ...i, ...extra, cantidad: i.cantidad + 1, added_at: now } : i
         )
-      : [...cuentaActiva.items, { nombre, precio, cantidad: 1 }];
+      : [...cuentaActiva.items, { nombre, precio, cantidad: 1, added_at: now, ...extra }];
     await actualizarCuenta(cuentaActiva.id, items);
   }
 
@@ -183,19 +234,37 @@ export default function Page() {
     const precio = parseFloat(libreImporte);
     if (precio <= 0) return;
     const nombre = libreNombre.trim() || `Varios ${precio.toFixed(2)}€`;
-    await handleAgregar(nombre, precio);
+    const existe = cuentaActiva.items.find((i) => i.nombre === nombre);
+    const now = new Date().toISOString();
+    const nuevoItem: Item = { nombre, precio, cantidad: 1, added_at: now, ...(libreCategoria ? { categoria: libreCategoria } : {}) };
+    const extraLibre = libreCategoria ? { categoria: libreCategoria } : {};
+    const items = existe
+      ? cuentaActiva.items.map((i) => i.nombre === nombre ? { ...i, ...extraLibre, cantidad: i.cantidad + 1, added_at: now } : i)
+      : [...cuentaActiva.items, nuevoItem];
+    await actualizarCuenta(cuentaActiva.id, items);
     setModal(null);
     setLibreNombre("");
     setLibreImporte("");
+    setLibreCategoria("");
   }
 
   async function handleCobrar() {
     if (!cuentaActiva || cobrando) return;
     setCobrando(true);
     await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion");
-    await eliminarCuenta(cuentaActiva.id);
-    await limpiarCuenta(cuentaActiva.id);
-    const siguiente = cuentas.find((c) => c.id !== cuentaActiva.id);
+    const tieneCocina = cuentaActiva.items.some((item) => {
+      const cat = PRODUCTOS.find((p) => p.nombre === item.nombre)?.categoria ?? item.categoria;
+      if (!cat || !CATS_COCINA.includes(cat)) return false;
+      const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === item.nombre);
+      return item.cantidad - (servida?.cantidad_servida ?? 0) > 0;
+    });
+    if (tieneCocina) {
+      await marcarPagada(cuentaActiva.id);
+    } else {
+      await eliminarCuenta(cuentaActiva.id);
+      await limpiarCuenta(cuentaActiva.id);
+    }
+    const siguiente = cuentas.find((c) => c.id !== cuentaActiva.id && !c.pagada);
     setIdActiva(siguiente?.id ?? null);
     setModal(null);
     setEfectivo("");
@@ -241,8 +310,13 @@ export default function Page() {
   }
 
   async function handleCerrarDia() {
+    for (const cuenta of cuentas) {
+      await limpiarCuenta(cuenta.id);
+      await eliminarCuenta(cuenta.id);
+    }
     await cerrarDia();
     await cerrarTurno();
+    setIdActiva(null);
     setConfirmandoCierre(false);
     setModal(null);
   }
@@ -267,18 +341,69 @@ export default function Page() {
   async function handleCobrarRapido() {
     if (cobrando || itemsRapidos.length === 0) return;
     setCobrando(true);
-    const hora = new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
-    const cuentaFake: Cuenta = {
-      id: "rapido",
-      nombre: `Rápido ${hora}`,
-      items: itemsRapidos,
-      total: totalRapido,
-      created_at: new Date().toISOString(),
-    };
-    await cobrarCuenta(cuentaFake, sesion?.id ?? "sin-sesion");
+    const nombre = nombreRapido.trim() || "Rápido";
+    const tieneCocina = itemsRapidos.some((item) => {
+      const cat = PRODUCTOS.find((p) => p.nombre === item.nombre)?.categoria ?? item.categoria;
+      return cat && CATS_COCINA.includes(cat);
+    });
+    if (tieneCocina) {
+      const now = new Date().toISOString();
+      const itemsConTs = itemsRapidos.map((i) => ({ ...i, added_at: now }));
+      const nueva = await crearCuenta(nombre);
+      if (nueva) {
+        await actualizarCuenta(nueva.id, itemsConTs);
+        await cobrarCuenta({ ...nueva, items: itemsConTs, total: totalRapido }, sesion?.id ?? "sin-sesion");
+        await marcarPagada(nueva.id);
+      }
+    } else {
+      const cuentaFake: Cuenta = {
+        id: "rapido",
+        nombre,
+        items: itemsRapidos,
+        total: totalRapido,
+        created_at: new Date().toISOString(),
+      };
+      await cobrarCuenta(cuentaFake, sesion?.id ?? "sin-sesion");
+    }
     setItemsRapidos([]);
+    setNombreRapido("");
     setModal(null);
     setCobrando(false);
+  }
+
+  // ── Backup / Exportar / Restaurar ────────────────────────
+
+  function handleExportar() {
+    const data = { exportado: new Date().toISOString(), sesion, cuentas: cuentas.filter(c => !c.pagada), cobros, totalDia };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const fecha = new Date().toISOString().slice(0, 16).replace("T", "_").replace(":", "-");
+    a.download = `timbre-${fecha}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleRestaurar() {
+    let backup: { cuentas: Cuenta[]; cobros: Cobro[]; timestamp: string } | null = null;
+    // 1. Intentar localStorage
+    try {
+      const raw = localStorage.getItem("timbre-backup-v1");
+      if (raw) backup = JSON.parse(raw);
+    } catch {}
+    // 2. Si no hay, tirar de Supabase
+    if (!backup) {
+      const { data } = await supabase.from("backups").select("datos").eq("id", "ultimo").maybeSingle();
+      if (data?.datos) backup = data.datos;
+    }
+    if (!backup) return;
+    for (const c of (backup.cuentas ?? [])) {
+      if (c.pagada) continue;
+      const nueva = await crearCuenta(c.nombre);
+      if (nueva && c.items?.length) await actualizarCuenta(nueva.id, c.items);
+    }
+    if (backup.cobros?.length) await restaurarCobros(backup.cobros);
   }
 
   // ── Lista de compra ───────────────────────────────────────
@@ -420,10 +545,10 @@ export default function Page() {
                 <div className="fixed inset-0 z-40" onClick={() => { setMostrandoDropdown(false); setCreando(false); setNuevoNombre(""); }} />
                 <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-white border border-gray-300 rounded-2xl shadow-2xl overflow-hidden flex flex-col" style={{ minWidth: "260px", maxHeight: "65dvh" }}>
                   <div className="overflow-y-auto flex-1" ref={dropdownListRef}>
-                    {cuentas.length === 0 && !creando && (
+                    {cuentasAbiertas.length === 0 && !creando && (
                       <p className="text-gray-500 text-sm text-center py-4">Sin cuentas abiertas</p>
                     )}
-                    {cuentas.map((c) => (
+                    {cuentasAbiertas.map((c) => (
                       <button
                         key={c.id}
                         data-id={c.id}
@@ -466,7 +591,7 @@ export default function Page() {
 
           {/* Cobro rápido */}
           <button
-            onClick={() => { setCategoriaRapida(CATEGORIAS[0]); setItemsRapidos([]); setModal("cobro-rapido"); }}
+            onClick={() => { setCategoriaRapida(CATEGORIAS[0]); setItemsRapidos([]); setNombreRapido(""); setModal("cobro-rapido"); }}
             className="shrink-0 flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-amber-600 active:bg-amber-700 text-gray-900 text-xs font-bold touch-manipulation min-h-[44px]"
             title="Cobro rápido"
           >
@@ -650,7 +775,7 @@ export default function Page() {
             ) : (
               <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2">
                 {productosFiltrados.map((p) => (
-                  <button key={p.id} onClick={() => handleAgregar(p.nombre, p.precio)}
+                  <button key={p.id} onClick={() => handleAgregar(p.nombre, p.precio, p.categoria)}
                     className="flex flex-col items-center justify-center p-3 bg-gray-100 active:bg-gray-200 active:scale-95 rounded-2xl transition-transform touch-manipulation"
                     style={{ minHeight: "72px" }}>
                     <span className="text-sm font-semibold text-center leading-tight">{p.nombre}</span>
@@ -676,7 +801,17 @@ export default function Page() {
             {/* Cabecera */}
             <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-gray-200">
               <h2 className="text-lg font-bold">⚡ Cobro rápido</h2>
-              <button onClick={() => setModal(null)} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation">✕</button>
+              <button onClick={() => { setModal(null); setItemsRapidos([]); setNombreRapido(""); }} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation">✕</button>
+            </div>
+            {/* Nombre opcional */}
+            <div className="shrink-0 px-3 pt-2 pb-1">
+              <input
+                value={nombreRapido}
+                onChange={(e) => setNombreRapido(e.target.value)}
+                placeholder="Nombre (opcional)…"
+                className="w-full bg-gray-100 border border-gray-300 focus:border-amber-500 rounded-xl px-3 py-2.5 outline-none text-sm"
+                style={{ fontSize: "16px" }}
+              />
             </div>
 
             {/* Categorías */}
@@ -829,6 +964,20 @@ export default function Page() {
               className="bg-gray-100 border border-gray-300 focus:border-amber-500 rounded-xl px-4 py-3 outline-none text-sm"
               style={{ fontSize: "16px" }}
             />
+            <div className="flex gap-2">
+              {["", "Montaditos", "Tapas"].map((cat) => (
+                <button key={cat} type="button" onClick={() => setLibreCategoria(cat)}
+                  className={`flex-1 py-2 rounded-xl text-xs font-semibold touch-manipulation border transition-colors ${
+                    libreCategoria === cat
+                      ? cat === "Montaditos" ? "bg-amber-500 text-black border-amber-500"
+                        : cat === "Tapas" ? "bg-indigo-500 text-white border-indigo-500"
+                        : "bg-gray-900 text-white border-gray-900"
+                      : "bg-gray-100 text-gray-500 border-gray-200"
+                  }`}>
+                  {cat === "" ? "Sin cocina" : cat === "Montaditos" ? "Montadito" : "Tapa"}
+                </button>
+              ))}
+            </div>
             <div className="bg-gray-100 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">
               {libreImporte || "0"}€
             </div>
@@ -1177,6 +1326,22 @@ export default function Page() {
               <span className="text-gray-400 text-sm">{cobros.length} cuenta{cobros.length !== 1 ? "s" : ""} cobrada{cobros.length !== 1 ? "s" : ""}</span>
               <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalDia.toFixed(2)}€</span>
             </div>
+            {/* Backup info */}
+            {backupTimestamp && (
+              <div className="shrink-0 px-4 pb-1 flex items-center justify-between gap-2">
+                <span className="text-xs text-gray-400">
+                  Copia: {new Date(backupTimestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+                <div className="flex gap-2">
+                  <button onClick={handleExportar} className="text-xs px-3 py-1.5 bg-gray-100 active:bg-gray-200 rounded-lg text-gray-500 touch-manipulation font-medium">
+                    Exportar JSON
+                  </button>
+                  <button onClick={handleRestaurar} className="text-xs px-3 py-1.5 bg-amber-100 active:bg-amber-200 rounded-lg text-amber-700 touch-manipulation font-medium">
+                    Restaurar
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="shrink-0 px-4 pt-1 pb-4 flex flex-col gap-2">
               {!confirmandoCierre && !confirmandoCierreTurno && (
                 <>
@@ -1207,6 +1372,11 @@ export default function Page() {
               {confirmandoCierre && (
                 <>
                   <p className="text-center text-sm text-gray-400 pb-1">¿Seguro? Se borrará todo el historial de hoy.</p>
+                  {cuentas.length > 0 && (
+                    <p className="text-center text-sm text-red-400 font-semibold pb-1">
+                      ⚠ Hay {cuentas.length} cuenta{cuentas.length !== 1 ? "s" : ""} abierta{cuentas.length !== 1 ? "s" : ""} — también se eliminarán.
+                    </p>
+                  )}
                   <button onClick={handleCerrarDia} className="w-full py-4 bg-red-600 active:bg-red-700 text-gray-900 rounded-2xl text-sm font-bold touch-manipulation">Sí, cerrar y borrar historial</button>
                   <button onClick={() => setConfirmandoCierre(false)} className="w-full py-4 bg-gray-100 active:bg-gray-200 text-gray-400 rounded-2xl text-sm touch-manipulation">Cancelar</button>
                 </>
@@ -1241,43 +1411,36 @@ export default function Page() {
                 <p className="text-sm">Todo servido</p>
               </div>
             ) : (
-              <div className="flex flex-col gap-3">
-                {Array.from(new Set(pedidosPendientes.map((p) => p.cuentaId))).map((cuentaId) => {
-                  const items = pedidosPendientes.filter((p) => p.cuentaId === cuentaId);
-                  return (
-                    <div key={cuentaId} className="bg-white rounded-2xl border border-gray-200 overflow-hidden shadow-sm">
-                      <div className="px-4 py-2.5 bg-amber-50 border-b border-amber-100">
-                        <span className="font-bold text-sm text-amber-700">{items[0].cuentaNombre}</span>
+              <div className="flex flex-col gap-2">
+                {pedidosPendientes.map(({ cuentaId, cuentaNombre, item, pendiente, categoria, pagada }) => (
+                  <div key={`${cuentaId}-${item.nombre}`} className={`bg-white rounded-2xl border shadow-sm flex items-center gap-3 px-4 py-3 ${pagada ? "border-green-300" : "border-gray-200"}`}>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-base font-bold text-gray-900">{cuentaNombre}</p>
+                        {pagada && <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-green-100 text-green-700 shrink-0">Pagada</span>}
                       </div>
-                      <div className="flex flex-col divide-y divide-gray-100">
-                        {items.map(({ item, pendiente }) => (
-                          <div key={item.nombre} className="flex items-center gap-3 px-4 py-3">
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-semibold text-gray-900 truncate">{item.nombre}</p>
-                            </div>
-                            <span className="text-xl font-bold text-gray-700 tabular-nums w-8 text-center shrink-0">×{pendiente}</span>
-                            <div className="flex gap-2 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => servirUno(cuentaId, item.nombre)}
-                                className="w-10 h-10 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-700 touch-manipulation text-xl font-bold"
-                              >−</button>
-                              <button
-                                type="button"
-                                onClick={() => servirTodo(cuentaId, item.nombre, item.cantidad)}
-                                className="w-10 h-10 flex items-center justify-center rounded-xl bg-green-500 active:bg-green-600 text-white touch-manipulation"
-                              >
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
-                                </svg>
-                              </button>
-                            </div>
-                          </div>
-                        ))}
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full shrink-0 ${
+                          categoria === "Montaditos" ? "bg-amber-100 text-amber-700" : "bg-indigo-100 text-indigo-700"
+                        }`}>
+                          {categoria === "Montaditos" ? "Montadito" : "Tapa"}
+                        </span>
+                        <span className="text-base font-semibold text-gray-800">{item.nombre}</span>
                       </div>
                     </div>
-                  );
-                })}
+                    <span className="text-xl font-bold text-gray-700 tabular-nums w-8 text-center shrink-0">×{pendiente}</span>
+                    <div className="flex gap-2 shrink-0">
+                      <button type="button" onClick={() => servirUno(cuentaId, item.nombre)}
+                        className="w-10 h-10 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-700 touch-manipulation text-xl font-bold">−</button>
+                      <button type="button" onClick={() => servirTodo(cuentaId, item.nombre, item.cantidad)}
+                        className="w-10 h-10 flex items-center justify-center rounded-xl bg-green-500 active:bg-green-600 text-white touch-manipulation">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>

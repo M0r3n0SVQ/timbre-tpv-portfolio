@@ -60,5 +60,18 @@ export function useCobros() {
     return true;
   }
 
-  return { cobros, loading, error, cobrarCuenta, cerrarDia, refetch: fetchCobros };
+  async function restaurarCobros(cobrosBackup: Cobro[]) {
+    for (const c of cobrosBackup) {
+      await supabase.from("cobros").insert({
+        nombre_cuenta: c.nombre_cuenta,
+        items: c.items,
+        total: c.total,
+        sesion_id: c.sesion_id,
+        created_at: c.created_at,
+      });
+    }
+    await fetchCobros();
+  }
+
+  return { cobros, loading, error, cobrarCuenta, cerrarDia, restaurarCobros, refetch: fetchCobros };
 }

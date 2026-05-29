@@ -2,6 +2,8 @@ export type Item = {
   nombre: string;
   precio: number;
   cantidad: number;
+  categoria?: string;
+  added_at?: string;
 };
 
 export type Cuenta = {
@@ -10,6 +12,7 @@ export type Cuenta = {
   items: Item[];
   total: number;
   created_at: string;
+  pagada?: boolean;
 };
 
 export type Cobro = {
