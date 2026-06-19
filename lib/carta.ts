@@ -1,13 +1,17 @@
 export type Producto = { id: string; nombre: string; precio: number; categoria: string };
 
 export const PRODUCTOS: Producto[] = [
-  // CERVEZAS
-  { id: 'p01', nombre: 'Caña',              precio: 1.60, categoria: 'Cervezas' },
-  { id: 'p02', nombre: 'Cortada',           precio: 1.70, categoria: 'Cervezas' },
-  { id: 'p03', nombre: 'Sin gluten',        precio: 1.80, categoria: 'Cervezas' },
-  { id: 'p04', nombre: 'Radler',            precio: 2.00, categoria: 'Cervezas' },
-  { id: 'p05', nombre: 'Sin alcohol 20cl',  precio: 1.50, categoria: 'Cervezas' },
-  { id: 'p06', nombre: 'Sin alcohol 33cl',  precio: 2.00, categoria: 'Cervezas' },
+  // BEBIDAS
+  { id: 'p01', nombre: 'Caña',              precio: 1.60, categoria: 'Bebidas' },
+  { id: 'p02', nombre: 'Cortada',           precio: 1.70, categoria: 'Bebidas' },
+  { id: 'p03', nombre: 'Sin gluten',        precio: 1.80, categoria: 'Bebidas' },
+  { id: 'p04', nombre: 'Radler',            precio: 2.00, categoria: 'Bebidas' },
+  { id: 'p05', nombre: 'Sin alcohol 20cl',  precio: 1.50, categoria: 'Bebidas' },
+  { id: 'p06', nombre: 'Sin alcohol 33cl',  precio: 2.00, categoria: 'Bebidas' },
+  { id: 'p15', nombre: 'Refresco',          precio: 1.80, categoria: 'Bebidas' },
+  { id: 'p16', nombre: 'Agua',              precio: 0.80, categoria: 'Bebidas' },
+  { id: 'p59', nombre: 'Zumo de piña',      precio: 1.20, categoria: 'Bebidas' },
+
   // VINOS
   { id: 'p07', nombre: 'Tinto verano',      precio: 1.80, categoria: 'Vinos' },
   { id: 'p08', nombre: 'Rioja',             precio: 3.00, categoria: 'Vinos' },
@@ -17,9 +21,7 @@ export const PRODUCTOS: Producto[] = [
   { id: 'p12', nombre: 'Vermú',             precio: 1.50, categoria: 'Vinos' },
   { id: 'p13', nombre: 'Cream',             precio: 1.50, categoria: 'Vinos' },
   { id: 'p14', nombre: 'V. naranja',        precio: 1.50, categoria: 'Vinos' },
-  // REFRESCOS
-  { id: 'p15', nombre: 'Refresco',          precio: 1.80, categoria: 'Refrescos' },
-  { id: 'p16', nombre: 'Agua',              precio: 0.80, categoria: 'Refrescos' },
+
   // MONTADITOS
   { id: 'p17', nombre: 'Melva morrón',          precio: 3.40, categoria: 'Montaditos' },
   { id: 'p18', nombre: 'Bacalao salmorejo',      precio: 3.40, categoria: 'Montaditos' },
@@ -37,10 +39,12 @@ export const PRODUCTOS: Producto[] = [
   { id: 'p30', nombre: 'Caña de lomo',           precio: 3.20, categoria: 'Montaditos' },
   { id: 'p31', nombre: 'Salchichón',             precio: 3.20, categoria: 'Montaditos' },
   { id: 'p32', nombre: 'Queso',                  precio: 3.20, categoria: 'Montaditos' },
+
   // APERITIVOS
   { id: 'p33', nombre: 'Patatas hispalanas',     precio: 1.30, categoria: 'Aperitivos' },
   { id: 'p34', nombre: 'Fogón real',             precio: 1.10, categoria: 'Aperitivos' },
   { id: 'p35', nombre: 'Torreznos',              precio: 1.50, categoria: 'Aperitivos' },
+  
   // TAPAS
   { id: 'p36', nombre: 'Anchoas',                precio: 3.40, categoria: 'Tapas' },
   { id: 'p37', nombre: 'Mojama',                 precio: 3.60, categoria: 'Tapas' },
@@ -55,7 +59,7 @@ export const PRODUCTOS: Producto[] = [
   { id: 'p46', nombre: 'Mechá',                  precio: 3.00, categoria: 'Tapas' },
   { id: 'p47', nombre: 'Chicharrón de Cádiz',    precio: 3.00, categoria: 'Tapas' },
   { id: 'p48', nombre: 'Morcilla hígado',        precio: 1.50, categoria: 'Tapas' },
-  { id: 'p49', nombre: 'Provolone',              precio: 4.50, categoria: 'Tapas' },
+  { id: 'p49', nombre: 'Provolone',              precio: 5.00, categoria: 'Tapas' },
   { id: 'p50', nombre: 'Caracoles',              precio: 2.50, categoria: 'Tapas' },
   { id: 'p51', nombre: 'Bacalao salmorejo',      precio: 3.40, categoria: 'Tapas' },
   { id: 'p52', nombre: 'Salmón guacamole',       precio: 3.40, categoria: 'Tapas' },

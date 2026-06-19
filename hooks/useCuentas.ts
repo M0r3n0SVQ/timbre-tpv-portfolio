@@ -26,9 +26,13 @@ export function useCuentas() {
 
   async function fetchCuentas() {
     setLoading(true);
+    const inicio = new Date();
+    if (inicio.getHours() < 6) inicio.setDate(inicio.getDate() - 1);
+    inicio.setHours(6, 0, 0, 0);
     const { data, error } = await supabase
       .from("cuentas")
       .select("*")
+      .gte("created_at", inicio.toISOString())
       .order("created_at", { ascending: true });
     if (error) setError(error.message);
     else setCuentas(data ?? []);

@@ -16,7 +16,9 @@ export function useSesion() {
       .on("postgres_changes", { event: "*", schema: "public", table: "sesiones" }, cargarSesion)
       .subscribe();
 
-    return () => { supabase.removeChannel(channel); };
+    const poll = setInterval(cargarSesion, 10000);
+
+    return () => { supabase.removeChannel(channel); clearInterval(poll); };
   }, []);
 
   async function cargarSesion() {
@@ -31,12 +33,12 @@ export function useSesion() {
     setLoading(false);
   }
 
-  async function iniciarTurno(turno: "mañana" | "tarde") {
+  async function iniciarTurno(turno: "mañana" | "tarde", cajaInicio: number = 0) {
     const id = `${turno}-${Date.now()}`;
     const fecha = new Date().toDateString();
     const { data } = await supabase
       .from("sesiones")
-      .insert({ id, turno, fecha, activa: true })
+      .insert({ id, turno, fecha, activa: true, caja_inicio: cajaInicio })
       .select()
       .single();
     if (data) setSesion(data as Sesion);
@@ -48,5 +50,11 @@ export function useSesion() {
     setSesion(null);
   }
 
-  return { sesion, loading, iniciarTurno, cerrarTurno };
+  async function actualizarCaja(importe: number) {
+    if (!sesion) return;
+    setSesion((prev) => prev ? { ...prev, caja_inicio: importe } : prev);
+    await supabase.from("sesiones").update({ caja_inicio: importe }).eq("id", sesion.id);
+  }
+
+  return { sesion, loading, iniciarTurno, cerrarTurno, actualizarCaja };
 }

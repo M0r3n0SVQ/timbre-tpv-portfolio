@@ -26,9 +26,14 @@ export function useCobros() {
 
   async function fetchCobros() {
     setLoading(true);
+    // Día de bar: desde las 6:00 AM (si son menos de las 6, el día empezó ayer)
+    const inicio = new Date();
+    if (inicio.getHours() < 6) inicio.setDate(inicio.getDate() - 1);
+    inicio.setHours(6, 0, 0, 0);
     const { data, error } = await supabase
       .from("cobros")
       .select("*")
+      .gte("created_at", inicio.toISOString())
       .order("created_at", { ascending: true });
     if (error) setError(error.message);
     else setCobros(data ?? []);

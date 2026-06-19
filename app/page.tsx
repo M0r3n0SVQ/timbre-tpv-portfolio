@@ -5,18 +5,31 @@ import { useCuentas } from "@/hooks/useCuentas";
 import { useCobros } from "@/hooks/useCobros";
 import { useSesion } from "@/hooks/useSesion";
 import { useComandas } from "@/hooks/useComandas";
+import { useCierres } from "@/hooks/useCierres";
 import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import { supabase } from "@/lib/supabase";
 import type { Cobro, Cuenta, Item } from "@/lib/types";
 
-type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
+type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | "cierres" | null;
 type LineaParcial = { nombre: string; precio: number; max: number; cobrar: number };
+
+// Fecha del "día de bar": empieza a las 6:00 AM, así que si se cierra de madrugada
+// (p.ej. la 1am) sigue contando como el día en que se abrió, no el siguiente.
+function fechaDiaBar(d: Date = new Date()) {
+  const f = new Date(d);
+  if (f.getHours() < 6) f.setDate(f.getDate() - 1);
+  const y = f.getFullYear();
+  const m = String(f.getMonth() + 1).padStart(2, "0");
+  const day = String(f.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 export default function Page() {
   const { cuentas, loading, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, refetch: refetchCuentas } = useCuentas();
   const { cobros, cobrarCuenta, cerrarDia, restaurarCobros, refetch: refetchCobros } = useCobros();
-  const { sesion, loading: loadingSesion, iniciarTurno, cerrarTurno } = useSesion();
+  const { sesion, loading: loadingSesion, iniciarTurno, cerrarTurno, actualizarCaja } = useSesion();
   const { servidas, servirUno, servirTodo, limpiarCuenta } = useComandas();
+  const { cierres, loadingCierres, guardarCierre, fetchCierres, eliminarCierre } = useCierres();
 
   const [idActiva, setIdActiva] = useState<string | null>(null);
 
@@ -35,6 +48,14 @@ export default function Page() {
   const [libreCategoria, setLibreCategoria] = useState("");
 
   const [confirmandoCierreTurno, setConfirmandoCierreTurno] = useState(false);
+
+  // Inicio de turno: selección en 2 pasos (turno → caja)
+  const [turnoSeleccionado, setTurnoSeleccionado] = useState<"mañana" | "tarde" | null>(null);
+  const [cajaInicioPendiente, setCajaInicioPendiente] = useState("");
+
+  // Edición de caja en cualquier momento
+  const [editandoCaja, setEditandoCaja] = useState(false);
+  const [cajaEditada, setCajaEditada] = useState("");
 
   const [seleccionParcial, setSeleccionParcial] = useState<LineaParcial[]>([]);
 
@@ -55,9 +76,12 @@ export default function Page() {
   const [listaCompra, setListaCompra] = useState<{ texto: string; hecho: boolean }[]>([]);
   const [nuevoItemCompra, setNuevoItemCompra] = useState("");
   const inputCompraRef = useRef<HTMLInputElement>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [cierreParaBorrar, setCierreParaBorrar] = useState<string | null>(null);
+  const [filtroHistorial, setFiltroHistorial] = useState<"semana" | "mes" | "año" | "todo">("mes");
 
-  // Historial: cobro expandido para ver ticket
-  const [cobroExpandido, setCobroExpandido] = useState<string | null>(null);
+  // Historial: cobro seleccionado para ver su ticket
+  const [cobroParaTicket, setCobroParaTicket] = useState<Cobro | null>(null);
 
   // Juntar cuentas: ID de la cuenta que se absorbe
   const [idCuentaJuntar, setIdCuentaJuntar] = useState<string | null>(null);
@@ -72,17 +96,50 @@ export default function Page() {
     if (el) el.scrollIntoView({ block: "nearest" });
   }, [mostrandoDropdown, idActiva]);
 
-  // Guardar/cargar lista de compra desde localStorage
+  // Cargar lista de compra: localStorage inmediato + Supabase como fuente de verdad
+  const listaCompraLista = useRef(false);
+  const listaCompraTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ultimoCambioLocalCompra = useRef(0);
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("timbre-lista-compra");
-      if (saved) setListaCompra(JSON.parse(saved));
-    } catch {}
+    async function cargarLista() {
+      try {
+        const saved = localStorage.getItem("timbre-lista-compra");
+        if (saved) setListaCompra(JSON.parse(saved));
+      } catch {}
+      try {
+        const { data } = await supabase.from("lista_compra").select("items").eq("id", "unica").maybeSingle();
+        if (data?.items) setListaCompra(data.items);
+      } catch {}
+      listaCompraLista.current = true;
+    }
+    cargarLista();
+
+    async function refrescarLista() {
+      // Evita pisar una edición local que aún no se ha guardado (debounce 2s)
+      if (Date.now() - ultimoCambioLocalCompra.current < 3000) return;
+      const { data } = await supabase.from("lista_compra").select("items").eq("id", "unica").maybeSingle();
+      if (data?.items) setListaCompra(data.items);
+    }
+
+    const channel = supabase
+      .channel("lista-compra-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "lista_compra" }, refrescarLista)
+      .subscribe();
+
+    const poll = setInterval(refrescarLista, 5000);
+
+    return () => { supabase.removeChannel(channel); clearInterval(poll); };
   }, []);
 
-  // Guardar lista de compra en localStorage al cambiar
+  // Guardar lista de compra: localStorage inmediato + Supabase con debounce 2s
   useEffect(() => {
-    localStorage.setItem("timbre-lista-compra", JSON.stringify(listaCompra));
+    if (!listaCompraLista.current) return;
+    ultimoCambioLocalCompra.current = Date.now();
+    try { localStorage.setItem("timbre-lista-compra", JSON.stringify(listaCompra)); } catch {}
+    if (listaCompraTimer.current) clearTimeout(listaCompraTimer.current);
+    listaCompraTimer.current = setTimeout(() => {
+      supabase.from("lista_compra").upsert({ id: "unica", items: listaCompra, updated_at: new Date().toISOString() }).then(() => {});
+    }, 2000);
   }, [listaCompra]);
 
   // Backup automático en localStorage + Supabase
@@ -136,6 +193,41 @@ export default function Page() {
   const itemsCompraPendientes = listaCompra.filter((i) => !i.hecho).length;
   const cuentasParaJuntar = cuentas.filter((c) => c.id !== idActiva && !c.pagada);
   const cuentasAbiertas = cuentas.filter((c) => !c.pagada);
+  const ticketData = cobroParaTicket
+    ? { nombre: cobroParaTicket.nombre_cuenta, items: cobroParaTicket.items, total: Number(cobroParaTicket.total), fecha: new Date(cobroParaTicket.created_at) }
+    : cuentaActiva
+    ? { nombre: cuentaActiva.nombre, items: cuentaActiva.items, total: cuentaActiva.total, fecha: new Date() }
+    : null;
+
+  // Historial de días: un cierre por día (varios cierres del mismo día se fusionan)
+  const diasAgrupados = (() => {
+    const map = new Map<string, { fecha: string; total_cobrado: number; num_cobros: number; ids: string[] }>();
+    for (const c of cierres) {
+      const ex = map.get(c.fecha);
+      if (ex) {
+        ex.total_cobrado += Number(c.total_cobrado);
+        ex.num_cobros += Number(c.num_cobros);
+        ex.ids.push(c.id);
+      } else {
+        map.set(c.fecha, { fecha: c.fecha, total_cobrado: Number(c.total_cobrado), num_cobros: Number(c.num_cobros), ids: [c.id] });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.fecha.localeCompare(a.fecha));
+  })();
+  const ahoraHistorial = new Date();
+  const diasFiltrados = diasAgrupados.filter((d) => {
+    if (filtroHistorial === "todo") return true;
+    const f = new Date(d.fecha + "T12:00:00");
+    if (filtroHistorial === "semana") {
+      const inicioSemana = new Date(ahoraHistorial);
+      inicioSemana.setDate(ahoraHistorial.getDate() - 7);
+      return f >= inicioSemana;
+    }
+    if (filtroHistorial === "mes") {
+      return f.getFullYear() === ahoraHistorial.getFullYear() && f.getMonth() === ahoraHistorial.getMonth();
+    }
+    return f.getFullYear() === ahoraHistorial.getFullYear();
+  });
 
   const CATS_COCINA = ["Montaditos", "Tapas"];
   const pedidosPendientes = cuentas.flatMap((cuenta) =>
@@ -152,8 +244,8 @@ export default function Page() {
       })
       .filter((x) => x.pendiente > 0)
   ).sort((a, b) => {
-    const ta = a.item.added_at ? new Date(a.item.added_at).getTime() : 0;
-    const tb = b.item.added_at ? new Date(b.item.added_at).getTime() : 0;
+    const ta = a.item.added_at ? new Date(a.item.added_at).getTime() : Infinity;
+    const tb = b.item.added_at ? new Date(b.item.added_at).getTime() : Infinity;
     return ta - tb;
   });
 
@@ -191,41 +283,41 @@ export default function Page() {
   async function handleAgregar(nombre: string, precio: number, categoria?: string) {
     if (!cuentaActiva) return;
     const now = new Date().toISOString();
-    const existe = cuentaActiva.items.find((i) => i.nombre === nombre);
+    const existe = cuentaActiva.items.find((i) => i.nombre === nombre && i.precio === precio);
     const extra = categoria ? { categoria } : {};
     const items = existe
       ? cuentaActiva.items.map((i) =>
-          i.nombre === nombre ? { ...i, ...extra, cantidad: i.cantidad + 1, added_at: now } : i
+          i.nombre === nombre && i.precio === precio ? { ...i, ...extra, cantidad: i.cantidad + 1 } : i
         )
       : [...cuentaActiva.items, { nombre, precio, cantidad: 1, added_at: now, ...extra }];
     await actualizarCuenta(cuentaActiva.id, items);
   }
 
-  async function handleSumar(nombre: string) {
+  async function handleSumar(nombre: string, precio: number) {
     if (!cuentaActiva) return;
     await actualizarCuenta(
       cuentaActiva.id,
       cuentaActiva.items.map((i) =>
-        i.nombre === nombre ? { ...i, cantidad: i.cantidad + 1 } : i
+        i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad + 1 } : i
       )
     );
   }
 
-  async function handleRestar(nombre: string) {
+  async function handleRestar(nombre: string, precio: number) {
     if (!cuentaActiva) return;
     await actualizarCuenta(
       cuentaActiva.id,
       cuentaActiva.items
-        .map((i) => (i.nombre === nombre ? { ...i, cantidad: i.cantidad - 1 } : i))
+        .map((i) => (i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad - 1 } : i))
         .filter((i) => i.cantidad > 0)
     );
   }
 
-  async function handleEliminarLinea(nombre: string) {
+  async function handleEliminarLinea(nombre: string, precio: number) {
     if (!cuentaActiva) return;
     await actualizarCuenta(
       cuentaActiva.id,
-      cuentaActiva.items.filter((i) => i.nombre !== nombre)
+      cuentaActiva.items.filter((i) => !(i.nombre === nombre && i.precio === precio))
     );
   }
 
@@ -239,7 +331,7 @@ export default function Page() {
     const nuevoItem: Item = { nombre, precio, cantidad: 1, added_at: now, ...(libreCategoria ? { categoria: libreCategoria } : {}) };
     const extraLibre = libreCategoria ? { categoria: libreCategoria } : {};
     const items = existe
-      ? cuentaActiva.items.map((i) => i.nombre === nombre ? { ...i, ...extraLibre, cantidad: i.cantidad + 1, added_at: now } : i)
+      ? cuentaActiva.items.map((i) => i.nombre === nombre ? { ...i, ...extraLibre, cantidad: i.cantidad + 1 } : i)
       : [...cuentaActiva.items, nuevoItem];
     await actualizarCuenta(cuentaActiva.id, items);
     setModal(null);
@@ -294,7 +386,7 @@ export default function Page() {
     await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", itemsACobrar);
     const restantes = cuentaActiva.items
       .map((i) => {
-        const l = seleccionParcial.find((s) => s.nombre === i.nombre);
+        const l = seleccionParcial.find((s) => s.nombre === i.nombre && s.precio === i.precio);
         return l ? { ...i, cantidad: i.cantidad - l.cobrar } : i;
       })
       .filter((i) => i.cantidad > 0);
@@ -310,6 +402,14 @@ export default function Page() {
   }
 
   async function handleCerrarDia() {
+    await guardarCierre({
+      fecha: fechaDiaBar(),
+      turno: sesion?.turno ?? "mañana",
+      caja_inicio: sesion?.caja_inicio ?? 0,
+      total_cobrado: totalDia,
+      num_cobros: cobros.length,
+      sesion_id: sesion?.id ?? null,
+    });
     for (const cuenta of cuentas) {
       await limpiarCuenta(cuenta.id);
       await eliminarCuenta(cuenta.id);
@@ -325,15 +425,15 @@ export default function Page() {
 
   function agregarItemRapido(nombre: string, precio: number) {
     setItemsRapidos((prev) => {
-      const existe = prev.find((i) => i.nombre === nombre);
-      if (existe) return prev.map((i) => i.nombre === nombre ? { ...i, cantidad: i.cantidad + 1 } : i);
+      const existe = prev.find((i) => i.nombre === nombre && i.precio === precio);
+      if (existe) return prev.map((i) => i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad + 1 } : i);
       return [...prev, { nombre, precio, cantidad: 1 }];
     });
   }
 
-  function restarItemRapido(nombre: string) {
+  function restarItemRapido(nombre: string, precio: number) {
     setItemsRapidos((prev) =>
-      prev.map((i) => i.nombre === nombre ? { ...i, cantidad: i.cantidad - 1 } : i)
+      prev.map((i) => i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad - 1 } : i)
           .filter((i) => i.cantidad > 0)
     );
   }
@@ -436,7 +536,7 @@ export default function Page() {
     setCobrando(true);
     const itemsMerged = [...cuentaActiva.items];
     for (const item of cuentaFuente.items) {
-      const existente = itemsMerged.find((i) => i.nombre === item.nombre);
+      const existente = itemsMerged.find((i) => i.nombre === item.nombre && i.precio === item.precio);
       if (existente) existente.cantidad += item.cantidad;
       else itemsMerged.push({ ...item });
     }
@@ -503,7 +603,7 @@ export default function Page() {
 
           {/* Historial: icono + badge, sin texto */}
           <button
-            onClick={() => { setConfirmandoCierre(false); setCobroExpandido(null); setModal("historial"); }}
+            onClick={() => { setConfirmandoCierre(false); setCobroParaTicket(null); fetchCierres(); setModal("historial"); }}
             title="Historial"
             className="relative shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation"
           >
@@ -686,13 +786,13 @@ export default function Page() {
                   <p className="text-gray-700 text-sm text-center py-10">Sin artículos todavía</p>
                 ) : (
                   cuentaActiva.items.map((item) => (
-                    <div key={item.nombre} className="flex items-center gap-1.5 bg-white rounded-xl px-2 py-2.5">
+                    <div key={`${item.nombre}-${item.precio}`} className="flex items-center gap-1.5 bg-white rounded-xl px-2 py-2.5">
                       <span className="flex-1 text-sm font-medium leading-tight min-w-0 truncate">{item.nombre}</span>
-                      <button onClick={() => handleRestar(item.nombre)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
+                      <button onClick={() => handleRestar(item.nombre, item.precio)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
                       <span className="w-5 text-center text-sm tabular-nums shrink-0 font-semibold">{item.cantidad}</span>
-                      <button onClick={() => handleSumar(item.nombre)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
+                      <button onClick={() => handleSumar(item.nombre, item.precio)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
                       <span className="w-12 text-right text-xs text-amber-400 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
-                      <button onClick={() => handleEliminarLinea(item.nombre)} className="w-7 h-7 rounded-lg bg-gray-100 active:bg-red-900 text-gray-400 active:text-red-400 text-sm shrink-0 touch-manipulation">×</button>
+                      <button onClick={() => handleEliminarLinea(item.nombre, item.precio)} className="w-7 h-7 rounded-lg bg-gray-100 active:bg-red-900 text-gray-400 active:text-red-400 text-sm shrink-0 touch-manipulation">×</button>
                     </div>
                   ))
                 )}
@@ -732,7 +832,7 @@ export default function Page() {
                     Juntar
                   </button>
                 </div>
-                <button onClick={() => setModal("ticket")} disabled={sinItems}
+                <button onClick={() => { setCobroParaTicket(null); setModal("ticket"); }} disabled={sinItems}
                   className="w-full py-2.5 bg-gray-100 active:bg-gray-200 disabled:opacity-25 border border-gray-300 rounded-xl text-sm text-gray-400 font-medium touch-manipulation">
                   🧾 Ver ticket
                 </button>
@@ -830,7 +930,7 @@ export default function Page() {
             <div className="flex-1 overflow-y-auto scroll-touch p-3">
               <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                 {productosRapidosFiltrados.map((p) => {
-                  const cant = itemsRapidos.find((i) => i.nombre === p.nombre)?.cantidad ?? 0;
+                  const cant = itemsRapidos.find((i) => i.nombre === p.nombre && i.precio === p.precio)?.cantidad ?? 0;
                   return (
                     <button key={p.id} onClick={() => agregarItemRapido(p.nombre, p.precio)}
                       className={`relative flex flex-col items-center justify-center p-3 rounded-2xl active:scale-95 transition-transform touch-manipulation ${
@@ -855,9 +955,9 @@ export default function Page() {
               {itemsRapidos.length > 0 && (
                 <div className="px-4 pt-3 flex flex-col gap-1.5 max-h-40 overflow-y-auto">
                   {itemsRapidos.map((item) => (
-                    <div key={item.nombre} className="flex items-center gap-2">
+                    <div key={`${item.nombre}-${item.precio}`} className="flex items-center gap-2">
                       <span className="flex-1 text-sm truncate">{item.nombre}</span>
-                      <button onClick={() => restarItemRapido(item.nombre)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
+                      <button onClick={() => restarItemRapido(item.nombre, item.precio)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
                       <span className="w-5 text-center text-sm tabular-nums font-bold shrink-0">{item.cantidad}</span>
                       <button onClick={() => agregarItemRapido(item.nombre, item.precio)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
                       <span className="w-14 text-right text-xs text-amber-400 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
@@ -1002,12 +1102,12 @@ export default function Page() {
         </div>
       )}
 
-      {/* ── Modal: Vista previa ticket ── */}
-      {modal === "ticket" && cuentaActiva && (
+      {/* ── Modal: Ticket (vista previa o recibo ya cobrado) ── */}
+      {modal === "ticket" && ticketData && (
         <div className="fixed inset-0 bg-black/90 flex flex-col items-center justify-center z-50 p-4"
              style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
           <div className="w-full max-w-xs flex justify-end mb-3">
-            <button onClick={() => setModal(null)}
+            <button onClick={() => { setModal(cobroParaTicket ? "historial" : null); setCobroParaTicket(null); }}
               className="w-8 h-8 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 text-sm touch-manipulation">
               ✕
             </button>
@@ -1017,14 +1117,14 @@ export default function Page() {
             <div className="text-center py-5 px-4 border-b border-dashed border-gray-300">
               <img src="/logo.jpg" alt="Cervecería El Timbre" className="h-16 w-auto mx-auto object-contain" />
               <p className="text-xs text-gray-400 mt-1">
-                {new Date().toLocaleDateString("es-ES", { day: "2-digit", month: "long", year: "numeric" })}
+                {ticketData.fecha.toLocaleDateString("es-ES", { day: "2-digit", month: "long", year: "numeric" })}
                 {" · "}
-                {new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+                {ticketData.fecha.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
               </p>
-              <p className="text-sm font-semibold mt-2">{cuentaActiva.nombre}</p>
+              <p className="text-sm font-semibold mt-2">{ticketData.nombre}</p>
             </div>
             <div className="px-4 py-3 flex flex-col gap-1.5">
-              {cuentaActiva.items.map((item) => (
+              {ticketData.items.map((item) => (
                 <div key={item.nombre} className="flex justify-between items-baseline text-sm">
                   <span className="flex-1 truncate">{item.nombre}</span>
                   <span className="text-gray-400 text-xs mx-2 shrink-0">{item.cantidad}×{item.precio.toFixed(2)}</span>
@@ -1035,7 +1135,7 @@ export default function Page() {
             <div className="mx-4 border-t border-dashed border-gray-300" />
             <div className="flex justify-between items-center px-4 py-3">
               <span className="font-bold text-base tracking-wider uppercase">Total</span>
-              <span className="font-bold text-2xl tabular-nums">{cuentaActiva.total.toFixed(2)}€</span>
+              <span className="font-bold text-2xl tabular-nums">{ticketData.total.toFixed(2)}€</span>
             </div>
             <div className="text-center py-3 border-t border-dashed border-gray-300">
               <p className="text-xs text-gray-400">¡Gracias por tu visita!</p>
@@ -1229,32 +1329,41 @@ export default function Page() {
               {cobros.length === 0 ? (
                 <p className="text-gray-500 text-sm text-center py-10">No hay cuentas cobradas aún</p>
               ) : (() => {
-                const sesiones = cobros.reduce<{ id: string; cobros: Cobro[] }[]>((acc, cobro) => {
+                // Extraer sesiones únicas con su timestamp de inicio real
+                const sesionesMap = new Map<string, { turno: string; startTime: number }>();
+                for (const cobro of cobros) {
                   const sid = cobro.sesion_id ?? "sin-sesion";
-                  const existente = acc.find((s) => s.id === sid);
-                  if (existente) existente.cobros.push(cobro);
-                  else acc.push({ id: sid, cobros: [cobro] });
-                  return acc;
-                }, []);
-
-                return sesiones.map((sesion, si) => {
-                  const totalSesion = sesion.cobros.reduce((s, c) => s + Number(c.total), 0);
-                  let etiqueta = `Sesión ${si + 1}`;
-                  let timestamp: number | null = null;
-                  let colorEtiqueta = "text-gray-400";
-                  if (sesion.id !== "sin-sesion") {
-                    if (sesion.id.startsWith("mañana-")) {
-                      etiqueta = "Turno de Mañana";
-                      timestamp = parseInt(sesion.id.replace("mañana-", ""));
-                      colorEtiqueta = "text-orange-400";
-                    } else if (sesion.id.startsWith("tarde-")) {
-                      etiqueta = "Turno de Tarde";
-                      timestamp = parseInt(sesion.id.replace("tarde-", ""));
-                      colorEtiqueta = "text-indigo-400";
-                    } else {
-                      timestamp = parseInt(sesion.id);
-                    }
+                  if (!sesionesMap.has(sid)) {
+                    let turno = "mañana";
+                    let startTime = 0;
+                    if (sid.startsWith("mañana-")) { turno = "mañana"; startTime = parseInt(sid.replace("mañana-", "")); }
+                    else if (sid.startsWith("tarde-")) { turno = "tarde"; startTime = parseInt(sid.replace("tarde-", "")); }
+                    sesionesMap.set(sid, { turno, startTime });
                   }
+                }
+                // Ordenar sesiones por hora de inicio
+                const sesionesOrdenadas = Array.from(sesionesMap.entries())
+                  .sort(([, a], [, b]) => a.startTime - b.startTime);
+
+                // Asignar cada cobro a la sesión correcta por su hora real (no por sesion_id guardado)
+                const grupos = sesionesOrdenadas.map(([sid, info], i) => {
+                  const nextStart = i + 1 < sesionesOrdenadas.length ? sesionesOrdenadas[i + 1][1].startTime : Infinity;
+                  return {
+                    id: sid,
+                    turno: info.turno,
+                    startTime: info.startTime,
+                    cobros: cobros.filter((c) => {
+                      const t = new Date(c.created_at).getTime();
+                      return t >= info.startTime && t < nextStart;
+                    }),
+                  };
+                }).filter((g) => g.cobros.length > 0);
+
+                return grupos.map((sesion, si) => {
+                  const totalSesion = sesion.cobros.reduce((s, c) => s + Number(c.total), 0);
+                  const etiqueta = sesion.turno === "mañana" ? "Turno de Mañana" : "Turno de Tarde";
+                  const colorEtiqueta = sesion.turno === "mañana" ? "text-orange-400" : "text-indigo-400";
+                  const timestamp = sesion.startTime || null;
                   const horaInicio = timestamp
                     ? new Date(timestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })
                     : null;
@@ -1267,51 +1376,26 @@ export default function Page() {
                         <div className="flex-1 h-px bg-gray-100" />
                       </div>
                       <div className="flex flex-col gap-1.5">
-                        {sesion.cobros.map((cobro) => {
-                          const expandido = cobroExpandido === cobro.id;
-                          return (
-                            <div key={cobro.id} className="bg-gray-100 rounded-2xl overflow-hidden">
-                              {/* Fila principal: toca para expandir */}
-                              <button
-                                onClick={() => setCobroExpandido(expandido ? null : cobro.id)}
-                                className="w-full flex items-start justify-between gap-3 px-4 py-3 touch-manipulation active:bg-gray-200 text-left"
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <p className="font-semibold text-sm">{cobro.nombre_cuenta}</p>
-                                  <p className="text-gray-400 text-xs mt-0.5">
-                                    {new Date(cobro.created_at).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
-                                    {" · "}
-                                    {cobro.items.length} artículo{cobro.items.length !== 1 ? "s" : ""}
-                                  </p>
-                                </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                  <span className="text-amber-400 font-bold tabular-nums">{Number(cobro.total).toFixed(2)}€</span>
-                                  <span className={`text-gray-400 text-xs transition-transform ${expandido ? "rotate-180" : ""}`}>▾</span>
-                                </div>
-                              </button>
-
-                              {/* Ticket expandido */}
-                              {expandido && (
-                                <div className="border-t border-gray-300 px-4 py-3"
-                                     style={{ fontFamily: "ui-monospace, monospace" }}>
-                                  <div className="flex flex-col gap-1">
-                                    {cobro.items.map((item) => (
-                                      <div key={item.nombre} className="flex justify-between items-baseline text-xs">
-                                        <span className="flex-1 truncate text-gray-500">{item.nombre}</span>
-                                        <span className="text-gray-400 mx-2 shrink-0">{item.cantidad}×{item.precio.toFixed(2)}</span>
-                                        <span className="text-gray-900 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                  <div className="mt-2 pt-2 border-t border-dashed border-gray-300 flex justify-between items-baseline">
-                                    <span className="text-gray-400 text-xs uppercase tracking-wider">Total</span>
-                                    <span className="text-amber-400 font-bold tabular-nums text-sm">{Number(cobro.total).toFixed(2)}€</span>
-                                  </div>
-                                </div>
-                              )}
+                        {sesion.cobros.map((cobro) => (
+                          <button
+                            key={cobro.id}
+                            onClick={() => { setCobroParaTicket(cobro); setModal("ticket"); }}
+                            className="w-full flex items-start justify-between gap-3 px-4 py-3 bg-gray-100 rounded-2xl touch-manipulation active:bg-gray-200 text-left"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-sm">{cobro.nombre_cuenta}</p>
+                              <p className="text-gray-400 text-xs mt-0.5">
+                                {new Date(cobro.created_at).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+                                {" · "}
+                                {cobro.items.length} artículo{cobro.items.length !== 1 ? "s" : ""}
+                              </p>
                             </div>
-                          );
-                        })}
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-amber-400 font-bold tabular-nums">{Number(cobro.total).toFixed(2)}€</span>
+                              <span className="text-gray-400 text-xs">🧾</span>
+                            </div>
+                          </button>
+                        ))}
                         <div className="flex justify-between px-1 py-1 text-xs text-gray-400">
                           <span>{sesion.cobros.length} cobro{sesion.cobros.length !== 1 ? "s" : ""}</span>
                           <span className="font-semibold text-gray-400">{totalSesion.toFixed(2)}€</span>
@@ -1322,9 +1406,51 @@ export default function Page() {
                 });
               })()}
             </div>
-            <div className="shrink-0 border-t border-gray-200 px-5 py-3 flex justify-between items-baseline">
-              <span className="text-gray-400 text-sm">{cobros.length} cuenta{cobros.length !== 1 ? "s" : ""} cobrada{cobros.length !== 1 ? "s" : ""}</span>
-              <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalDia.toFixed(2)}€</span>
+            <div className="shrink-0 border-t border-gray-200 px-4 py-3 flex items-center gap-3">
+              {/* Caja editable */}
+              <div className="flex-1 flex items-center gap-2">
+                {editandoCaja ? (
+                  <div className="flex items-center gap-1.5 flex-1">
+                    <span className="text-xs text-gray-400 shrink-0">Caja:</span>
+                    <input
+                      autoFocus
+                      type="number"
+                      inputMode="decimal"
+                      value={cajaEditada}
+                      onChange={(e) => setCajaEditada(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          actualizarCaja(parseFloat(cajaEditada) || 0);
+                          setEditandoCaja(false);
+                        }
+                        if (e.key === "Escape") setEditandoCaja(false);
+                      }}
+                      placeholder="0.00"
+                      className="w-24 bg-gray-100 border border-amber-400 rounded-lg px-2 py-1 text-sm font-semibold outline-none tabular-nums"
+                      style={{ fontSize: "16px" }}
+                    />
+                    <span className="text-xs text-gray-400">€</span>
+                    <button
+                      onClick={() => { actualizarCaja(parseFloat(cajaEditada) || 0); setEditandoCaja(false); }}
+                      className="text-xs px-2 py-1 bg-amber-500 text-black rounded-lg font-semibold touch-manipulation"
+                    >OK</button>
+                    <button onClick={() => setEditandoCaja(false)} className="text-xs text-gray-400 touch-manipulation">✕</button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setCajaEditada(sesion ? String(sesion.caja_inicio) : "0"); setEditandoCaja(true); }}
+                    className="flex items-center gap-1.5 text-left touch-manipulation group"
+                  >
+                    <span className="text-xs text-gray-400">Caja:</span>
+                    <span className="text-sm font-semibold text-gray-600 tabular-nums">{Number(sesion?.caja_inicio ?? 0).toFixed(2)}€</span>
+                    <span className="text-[10px] text-gray-300 group-active:text-gray-500">✏</span>
+                  </button>
+                )}
+              </div>
+              <div className="text-right shrink-0">
+                <p className="text-xs text-gray-400">{cobros.length} cobro{cobros.length !== 1 ? "s" : ""}</p>
+                <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalDia.toFixed(2)}€</span>
+              </div>
             </div>
             {/* Backup info */}
             {backupTimestamp && (
@@ -1342,6 +1468,27 @@ export default function Page() {
                 </div>
               </div>
             )}
+            {/* Acceso al historial de días */}
+            <div className="shrink-0 border-t border-gray-200 px-4 py-2">
+              <button
+                onClick={() => { fetchCierres(); setModal("cierres"); }}
+                className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 active:bg-gray-100 rounded-2xl touch-manipulation"
+              >
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  <span className="text-sm font-semibold text-gray-600">Historial de días</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {diasAgrupados.length > 0 && <span className="text-xs text-gray-400">{diasAgrupados.length} día{diasAgrupados.length !== 1 ? "s" : ""}</span>}
+                  <svg className="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
+            </div>
+
             <div className="shrink-0 px-4 pt-1 pb-4 flex flex-col gap-2">
               {!confirmandoCierre && !confirmandoCierreTurno && (
                 <>
@@ -1385,6 +1532,127 @@ export default function Page() {
           </div>
         </div>
       )}
+      {/* ── Pantalla: Historial de días ── */}
+      {modal === "cierres" && (
+        <div className="absolute inset-0 z-50 bg-gray-50 flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
+          {/* Cabecera */}
+          <div className="shrink-0 flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200">
+            <button onClick={() => setModal("historial")} className="w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 touch-manipulation">
+              <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+            <h2 className="font-bold text-gray-900 flex-1">Historial de días</h2>
+            {diasFiltrados.length > 0 && (
+              <div className="text-right">
+                <p className="text-[10px] text-gray-400 uppercase tracking-wider">Total acumulado</p>
+                <p className="text-lg font-bold text-amber-500 tabular-nums">
+                  {diasFiltrados.reduce((s, d) => s + d.total_cobrado, 0).toFixed(2)}€
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Filtro por periodo */}
+          <div className="shrink-0 flex gap-2 px-4 py-3 bg-white border-b border-gray-200">
+            {(["semana", "mes", "año", "todo"] as const).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFiltroHistorial(f)}
+                className={`flex-1 py-2 rounded-xl text-xs font-semibold capitalize touch-manipulation ${
+                  filtroHistorial === f ? "bg-amber-500 text-gray-900" : "bg-gray-100 text-gray-500 active:bg-gray-200"
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+
+          {/* Lista */}
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            {loadingCierres ? (
+              <div className="flex justify-center py-12">
+                <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : diasFiltrados.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+                <svg className="w-14 h-14 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <p className="text-sm">Sin cierres registrados</p>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {diasFiltrados.map((d) => (
+                  <div
+                    key={d.fecha}
+                    className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden select-none"
+                    onPointerDown={() => { longPressTimer.current = setTimeout(() => setCierreParaBorrar(d.fecha), 600); }}
+                    onPointerUp={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
+                    onPointerLeave={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
+                  >
+                    <div className="flex items-center gap-4 px-4 py-4">
+                      {/* Fecha */}
+                      <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl w-14 h-14 shrink-0">
+                        <span className="text-lg font-bold text-gray-800 leading-none">
+                          {new Date(d.fecha + "T12:00:00").getDate()}
+                        </span>
+                        <span className="text-[10px] text-gray-400 uppercase tracking-wide mt-0.5">
+                          {new Date(d.fecha + "T12:00:00").toLocaleDateString("es-ES", { month: "short" })}
+                        </span>
+                      </div>
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-gray-800">
+                          {new Date(d.fecha + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
+                        </p>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-xs text-gray-400">
+                            {d.num_cobros} cobro{d.num_cobros !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Total */}
+                      <div className="text-right shrink-0">
+                        <p className="text-xl font-bold text-amber-500 tabular-nums">{d.total_cobrado.toFixed(2)}€</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <p className="text-center text-xs text-gray-300 py-2">Mantén pulsado para borrar</p>
+              </div>
+            )}
+          </div>
+
+          {/* Confirmación borrar (long-press) */}
+          {cierreParaBorrar && (
+            <div className="absolute inset-0 bg-black/60 flex items-end z-10" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+              <div className="w-full bg-white rounded-t-3xl px-6 py-6 flex flex-col gap-3">
+                <p className="text-center text-sm text-gray-500">¿Borrar este día del historial?</p>
+                <button
+                  onClick={() => {
+                    const dia = diasAgrupados.find((d) => d.fecha === cierreParaBorrar);
+                    if (dia) for (const id of dia.ids) eliminarCierre(id);
+                    setCierreParaBorrar(null);
+                  }}
+                  className="w-full py-4 bg-red-600 active:bg-red-700 text-white rounded-2xl font-bold touch-manipulation"
+                >
+                  Sí, borrar
+                </button>
+                <button
+                  onClick={() => setCierreParaBorrar(null)}
+                  className="w-full py-3 bg-gray-100 active:bg-gray-200 text-gray-500 rounded-2xl text-sm touch-manipulation"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Modal Cocina ── */}
       {modal === "cocina" && (
         <div className="absolute inset-0 z-50 bg-gray-50 flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
@@ -1454,16 +1722,65 @@ export default function Page() {
           <div className="flex flex-col items-center gap-2">
             <img src="/logo.jpg" alt="Cervecería El Timbre" className="w-36 h-36 rounded-3xl object-contain bg-white p-2 shadow-xl" />
             <p className="text-gray-400 text-sm mt-1">
-              {loadingSesion ? "Cargando…" : "¿Qué turno empieza ahora?"}
+              {loadingSesion ? "Cargando…" : turnoSeleccionado ? "¿Cuánto hay en caja?" : "¿Qué turno empieza ahora?"}
             </p>
           </div>
 
           {loadingSesion ? (
             <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+          ) : turnoSeleccionado ? (
+            /* Paso 2: introducir caja de inicio */
+            <div className="flex flex-col gap-3 w-full max-w-xs">
+              <div className={`flex items-center justify-center gap-2 py-2 px-4 rounded-xl text-sm font-semibold ${
+                turnoSeleccionado === "mañana" ? "bg-amber-500/20 text-amber-600" : "bg-indigo-500/20 text-indigo-600"
+              }`}>
+                {turnoSeleccionado === "mañana" ? "☀ Turno de mañana" : "🌙 Turno de tarde"}
+              </div>
+              <div className="relative">
+                <input
+                  autoFocus
+                  type="number"
+                  inputMode="decimal"
+                  value={cajaInicioPendiente}
+                  onChange={(e) => setCajaInicioPendiente(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      iniciarTurno(turnoSeleccionado, parseFloat(cajaInicioPendiente) || 0);
+                      setCajaInicioPendiente("");
+                      setTurnoSeleccionado(null);
+                    }
+                  }}
+                  placeholder="0.00"
+                  className="w-full bg-white border border-gray-300 focus:border-amber-500 rounded-2xl px-4 py-4 text-2xl font-bold text-center outline-none tabular-nums"
+                  style={{ fontSize: "28px" }}
+                />
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 text-xl font-bold">€</span>
+              </div>
+              <p className="text-center text-xs text-gray-400">Déjalo en 0 si no quieres registrarlo</p>
+              <button
+                onClick={() => {
+                  iniciarTurno(turnoSeleccionado, parseFloat(cajaInicioPendiente) || 0);
+                  setCajaInicioPendiente("");
+                  setTurnoSeleccionado(null);
+                }}
+                className={`w-full py-5 rounded-2xl font-bold text-lg touch-manipulation ${
+                  turnoSeleccionado === "mañana" ? "bg-amber-500 active:bg-amber-600 text-black" : "bg-indigo-600 active:bg-indigo-700 text-white"
+                }`}
+              >
+                Empezar turno
+              </button>
+              <button
+                onClick={() => { setTurnoSeleccionado(null); setCajaInicioPendiente(""); }}
+                className="w-full py-3 rounded-2xl text-gray-400 text-sm touch-manipulation"
+              >
+                Volver
+              </button>
+            </div>
           ) : (
+            /* Paso 1: elegir turno */
             <div className="flex flex-col gap-3 w-full max-w-xs">
               <button
-                onClick={() => iniciarTurno("mañana")}
+                onClick={() => setTurnoSeleccionado("mañana")}
                 className="w-full py-5 rounded-2xl bg-amber-500 active:bg-amber-600 text-black font-bold text-lg touch-manipulation flex items-center justify-center gap-3"
               >
                 <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
@@ -1472,7 +1789,7 @@ export default function Page() {
                 Turno de mañana
               </button>
               <button
-                onClick={() => iniciarTurno("tarde")}
+                onClick={() => setTurnoSeleccionado("tarde")}
                 className="w-full py-5 rounded-2xl bg-indigo-600 active:bg-indigo-700 text-white font-bold text-lg touch-manipulation flex items-center justify-center gap-3"
               >
                 <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
