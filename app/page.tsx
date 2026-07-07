@@ -5,31 +5,18 @@ import { useCuentas } from "@/hooks/useCuentas";
 import { useCobros } from "@/hooks/useCobros";
 import { useSesion } from "@/hooks/useSesion";
 import { useComandas } from "@/hooks/useComandas";
-import { useCierres } from "@/hooks/useCierres";
 import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import { supabase } from "@/lib/supabase";
 import type { Cobro, Cuenta, Item } from "@/lib/types";
 
-type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | "cierres" | null;
+type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
 type LineaParcial = { nombre: string; precio: number; max: number; cobrar: number };
-
-// Fecha del "día de bar": empieza a las 6:00 AM, así que si se cierra de madrugada
-// (p.ej. la 1am) sigue contando como el día en que se abrió, no el siguiente.
-function fechaDiaBar(d: Date = new Date()) {
-  const f = new Date(d);
-  if (f.getHours() < 6) f.setDate(f.getDate() - 1);
-  const y = f.getFullYear();
-  const m = String(f.getMonth() + 1).padStart(2, "0");
-  const day = String(f.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 
 export default function Page() {
   const { cuentas, loading, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, refetch: refetchCuentas } = useCuentas();
   const { cobros, cobrarCuenta, cerrarDia, restaurarCobros, refetch: refetchCobros } = useCobros();
   const { sesion, loading: loadingSesion, iniciarTurno, cerrarTurno, actualizarCaja } = useSesion();
   const { servidas, servirUno, servirTodo, limpiarCuenta } = useComandas();
-  const { cierres, loadingCierres, guardarCierre, fetchCierres, eliminarCierre } = useCierres();
 
   const [idActiva, setIdActiva] = useState<string | null>(null);
 
@@ -77,8 +64,6 @@ export default function Page() {
   const [nuevoItemCompra, setNuevoItemCompra] = useState("");
   const inputCompraRef = useRef<HTMLInputElement>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [cierreParaBorrar, setCierreParaBorrar] = useState<string | null>(null);
-  const [filtroHistorial, setFiltroHistorial] = useState<"semana" | "mes" | "año" | "todo">("mes");
 
   // Historial: cobro seleccionado para ver su ticket
   const [cobroParaTicket, setCobroParaTicket] = useState<Cobro | null>(null);
@@ -98,19 +83,23 @@ export default function Page() {
 
   // Cargar lista de compra: localStorage inmediato + Supabase como fuente de verdad
   const listaCompraLista = useRef(false);
-  const listaCompraTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ultimoCambioLocalCompra = useRef(0);
+  const usuarioEditoCompra = useRef(false);
   useEffect(() => {
     async function cargarLista() {
       try {
         const saved = localStorage.getItem("timbre-lista-compra");
         if (saved) setListaCompra(JSON.parse(saved));
       } catch {}
+      // Marcar listo ANTES de la llamada a Supabase para que cualquier edición del
+      // usuario que llegue mientras carga quede guardada en vez de perderse.
+      listaCompraLista.current = true;
       try {
         const { data } = await supabase.from("lista_compra").select("items").eq("id", "unica").maybeSingle();
-        if (data?.items) setListaCompra(data.items);
+        // Solo aplicar datos de Supabase si el usuario NO ha tocado la lista
+        // todavía (evita sobreescribir lo que acaba de escribir).
+        if (data?.items && !usuarioEditoCompra.current) setListaCompra(data.items);
       } catch {}
-      listaCompraLista.current = true;
     }
     cargarLista();
 
@@ -131,15 +120,18 @@ export default function Page() {
     return () => { supabase.removeChannel(channel); clearInterval(poll); };
   }, []);
 
-  // Guardar lista de compra: localStorage inmediato + Supabase con debounce 2s
+  // Guardar lista de compra: localStorage inmediato + Supabase inmediato
+  // Sin debounce: los cambios solo se disparan en acciones del usuario (añadir/borrar),
+  // nunca en cada tecla, así que guardar al momento elimina la ventana en que el
+  // polling podía restaurar un item recién borrado.
   useEffect(() => {
     if (!listaCompraLista.current) return;
     ultimoCambioLocalCompra.current = Date.now();
     try { localStorage.setItem("timbre-lista-compra", JSON.stringify(listaCompra)); } catch {}
-    if (listaCompraTimer.current) clearTimeout(listaCompraTimer.current);
-    listaCompraTimer.current = setTimeout(() => {
-      supabase.from("lista_compra").upsert({ id: "unica", items: listaCompra, updated_at: new Date().toISOString() }).then(() => {});
-    }, 2000);
+    // Solo guardar en Supabase si fue el usuario quien cambió la lista (no una carga del sistema).
+    // Evita que localStorage vacío o la carga inicial sobreescriba la lista real en Supabase.
+    if (!usuarioEditoCompra.current) return;
+    supabase.from("lista_compra").upsert({ id: "unica", items: listaCompra, updated_at: new Date().toISOString() }).then(() => {});
   }, [listaCompra]);
 
   // Backup automático en localStorage + Supabase
@@ -199,36 +191,6 @@ export default function Page() {
     ? { nombre: cuentaActiva.nombre, items: cuentaActiva.items, total: cuentaActiva.total, fecha: new Date() }
     : null;
 
-  // Historial de días: un cierre por día (varios cierres del mismo día se fusionan)
-  const diasAgrupados = (() => {
-    const map = new Map<string, { fecha: string; total_cobrado: number; num_cobros: number; ids: string[] }>();
-    for (const c of cierres) {
-      const ex = map.get(c.fecha);
-      if (ex) {
-        ex.total_cobrado += Number(c.total_cobrado);
-        ex.num_cobros += Number(c.num_cobros);
-        ex.ids.push(c.id);
-      } else {
-        map.set(c.fecha, { fecha: c.fecha, total_cobrado: Number(c.total_cobrado), num_cobros: Number(c.num_cobros), ids: [c.id] });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => b.fecha.localeCompare(a.fecha));
-  })();
-  const ahoraHistorial = new Date();
-  const diasFiltrados = diasAgrupados.filter((d) => {
-    if (filtroHistorial === "todo") return true;
-    const f = new Date(d.fecha + "T12:00:00");
-    if (filtroHistorial === "semana") {
-      const inicioSemana = new Date(ahoraHistorial);
-      inicioSemana.setDate(ahoraHistorial.getDate() - 7);
-      return f >= inicioSemana;
-    }
-    if (filtroHistorial === "mes") {
-      return f.getFullYear() === ahoraHistorial.getFullYear() && f.getMonth() === ahoraHistorial.getMonth();
-    }
-    return f.getFullYear() === ahoraHistorial.getFullYear();
-  });
-
   const CATS_COCINA = ["Montaditos", "Tapas"];
   const pedidosPendientes = cuentas.flatMap((cuenta) =>
     cuenta.items
@@ -286,9 +248,15 @@ export default function Page() {
     const existe = cuentaActiva.items.find((i) => i.nombre === nombre && i.precio === precio);
     const extra = categoria ? { categoria } : {};
     const items = existe
-      ? cuentaActiva.items.map((i) =>
-          i.nombre === nombre && i.precio === precio ? { ...i, ...extra, cantidad: i.cantidad + 1 } : i
-        )
+      ? cuentaActiva.items.map((i) => {
+          if (i.nombre !== nombre || i.precio !== precio) return i;
+          // Si todas las unidades ya fueron servidas (pendiente = 0), esta nueva
+          // unidad es un pedido nuevo: resetear added_at para que vaya al final
+          // de la cola de cocina, no al principio por tener un timestamp antiguo.
+          const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === nombre);
+          const todoServido = (servida?.cantidad_servida ?? 0) >= i.cantidad;
+          return { ...i, ...extra, cantidad: i.cantidad + 1, ...(todoServido ? { added_at: now } : {}) };
+        })
       : [...cuentaActiva.items, { nombre, precio, cantidad: 1, added_at: now, ...extra }];
     await actualizarCuenta(cuentaActiva.id, items);
   }
@@ -331,7 +299,12 @@ export default function Page() {
     const nuevoItem: Item = { nombre, precio, cantidad: 1, added_at: now, ...(libreCategoria ? { categoria: libreCategoria } : {}) };
     const extraLibre = libreCategoria ? { categoria: libreCategoria } : {};
     const items = existe
-      ? cuentaActiva.items.map((i) => i.nombre === nombre ? { ...i, ...extraLibre, cantidad: i.cantidad + 1 } : i)
+      ? cuentaActiva.items.map((i) => {
+          if (i.nombre !== nombre) return i;
+          const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === nombre);
+          const todoServido = (servida?.cantidad_servida ?? 0) >= i.cantidad;
+          return { ...i, ...extraLibre, cantidad: i.cantidad + 1, ...(todoServido ? { added_at: now } : {}) };
+        })
       : [...cuentaActiva.items, nuevoItem];
     await actualizarCuenta(cuentaActiva.id, items);
     setModal(null);
@@ -391,9 +364,19 @@ export default function Page() {
       })
       .filter((i) => i.cantidad > 0);
     if (restantes.length === 0) {
-      await eliminarCuenta(cuentaActiva.id);
-      await limpiarCuenta(cuentaActiva.id);
-      setIdActiva(cuentas.find((c) => c.id !== cuentaActiva.id)?.id ?? null);
+      const tieneCocina = cuentaActiva.items.some((item) => {
+        const cat = PRODUCTOS.find((p) => p.nombre === item.nombre)?.categoria ?? item.categoria;
+        if (!cat || !CATS_COCINA.includes(cat)) return false;
+        const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === item.nombre);
+        return item.cantidad - (servida?.cantidad_servida ?? 0) > 0;
+      });
+      if (tieneCocina) {
+        await marcarPagada(cuentaActiva.id);
+      } else {
+        await eliminarCuenta(cuentaActiva.id);
+        await limpiarCuenta(cuentaActiva.id);
+      }
+      setIdActiva(cuentas.find((c) => c.id !== cuentaActiva.id && !c.pagada)?.id ?? null);
     } else {
       await actualizarCuenta(cuentaActiva.id, restantes);
     }
@@ -402,14 +385,6 @@ export default function Page() {
   }
 
   async function handleCerrarDia() {
-    await guardarCierre({
-      fecha: fechaDiaBar(),
-      turno: sesion?.turno ?? "mañana",
-      caja_inicio: sesion?.caja_inicio ?? 0,
-      total_cobrado: totalDia,
-      num_cobros: cobros.length,
-      sesion_id: sesion?.id ?? null,
-    });
     for (const cuenta of cuentas) {
       await limpiarCuenta(cuenta.id);
       await eliminarCuenta(cuenta.id);
@@ -510,21 +485,25 @@ export default function Page() {
 
   function agregarItemCompra() {
     if (!nuevoItemCompra.trim()) return;
+    usuarioEditoCompra.current = true;
     setListaCompra((prev) => [...prev, { texto: nuevoItemCompra.trim(), hecho: false }]);
     setNuevoItemCompra("");
     setTimeout(() => inputCompraRef.current?.focus(), 50);
   }
 
   function toggleItemCompra(idx: number) {
-    setListaCompra((prev) => prev.map((i, j) => j === idx ? { ...i, hecho: !i.hecho } : i));
+    usuarioEditoCompra.current = true;
+    setListaCompra((prev) => prev.map((item, j) => j === idx ? { ...item, hecho: !item.hecho } : item));
   }
 
   function eliminarItemCompra(idx: number) {
+    usuarioEditoCompra.current = true;
     setListaCompra((prev) => prev.filter((_, j) => j !== idx));
   }
 
   function borrarCompletados() {
-    setListaCompra((prev) => prev.filter((i) => !i.hecho));
+    usuarioEditoCompra.current = true;
+    setListaCompra((prev) => prev.filter((item) => !item.hecho));
   }
 
   // ── Juntar cuentas ────────────────────────────────────────
@@ -536,11 +515,16 @@ export default function Page() {
     setCobrando(true);
     const itemsMerged = [...cuentaActiva.items];
     for (const item of cuentaFuente.items) {
+      // Solo transferir la cantidad que aún no ha salido de cocina
+      const servidaFuente = servidas.find((s) => s.cuenta_id === idCuentaJuntar && s.item_nombre === item.nombre);
+      const pendienteFuente = item.cantidad - (servidaFuente?.cantidad_servida ?? 0);
+      if (pendienteFuente <= 0) continue;
       const existente = itemsMerged.find((i) => i.nombre === item.nombre && i.precio === item.precio);
-      if (existente) existente.cantidad += item.cantidad;
-      else itemsMerged.push({ ...item });
+      if (existente) existente.cantidad += pendienteFuente;
+      else itemsMerged.push({ ...item, cantidad: pendienteFuente });
     }
     await actualizarCuenta(cuentaActiva.id, itemsMerged);
+    await limpiarCuenta(idCuentaJuntar);
     await eliminarCuenta(idCuentaJuntar);
     setIdCuentaJuntar(null);
     setModal(null);
@@ -603,7 +587,7 @@ export default function Page() {
 
           {/* Historial: icono + badge, sin texto */}
           <button
-            onClick={() => { setConfirmandoCierre(false); setCobroParaTicket(null); fetchCierres(); setModal("historial"); }}
+            onClick={() => { setConfirmandoCierre(false); setCobroParaTicket(null); setModal("historial"); }}
             title="Historial"
             className="relative shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation"
           >
@@ -1021,17 +1005,23 @@ export default function Page() {
                 <p className="text-gray-500 text-sm text-center py-10">La lista está vacía</p>
               ) : (
                 listaCompra.map((item, idx) => (
-                  <div key={idx} className="flex items-center gap-3 bg-gray-100 rounded-xl px-4 py-3">
+                  <div key={idx} className={`flex items-center gap-3 rounded-xl px-4 py-3 ${item.hecho ? "bg-gray-50" : "bg-gray-100"}`}>
                     <button
                       onClick={() => toggleItemCompra(idx)}
                       className={`w-6 h-6 rounded-full border-2 shrink-0 flex items-center justify-center touch-manipulation transition-colors ${
-                        item.hecho ? "bg-green-500 border-green-500 text-white" : "border-gray-400 active:border-green-500"
+                        item.hecho
+                          ? "bg-green-500 border-green-500 text-white"
+                          : "border-gray-400 active:bg-green-500 active:border-green-500"
                       }`}
                     >
-                      {item.hecho && <span className="text-xs font-bold">✓</span>}
+                      {item.hecho && (
+                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
                     </button>
-                    <span className={`flex-1 text-sm ${item.hecho ? "line-through text-gray-500" : "text-gray-900"}`}>{item.texto}</span>
-                    <button onClick={() => eliminarItemCompra(idx)} className="w-7 h-7 rounded-lg bg-gray-200 active:bg-red-900 text-gray-400 active:text-red-400 text-sm shrink-0 touch-manipulation">×</button>
+                    <span className={`flex-1 text-sm ${item.hecho ? "line-through text-gray-400" : "text-gray-900"}`}>{item.texto}</span>
+                    <button onClick={() => eliminarItemCompra(idx)} className="w-6 h-6 flex items-center justify-center text-gray-300 active:text-red-400 touch-manipulation text-base shrink-0">×</button>
                   </div>
                 ))
               )}
@@ -1040,8 +1030,8 @@ export default function Page() {
             {/* Acciones */}
             <div className="shrink-0 border-t border-gray-200 px-4 pt-3 pb-4 flex flex-col gap-2">
               {listaCompra.some((i) => i.hecho) && (
-                <button onClick={borrarCompletados} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-xl text-sm text-gray-400 touch-manipulation">
-                  Borrar completados ({listaCompra.filter((i) => i.hecho).length})
+                <button onClick={borrarCompletados} className="w-full py-3 bg-red-50 active:bg-red-100 text-red-500 rounded-xl text-sm font-semibold touch-manipulation">
+                  Borrar completados
                 </button>
               )}
               <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-xl text-gray-400 touch-manipulation">Cerrar</button>
@@ -1468,27 +1458,6 @@ export default function Page() {
                 </div>
               </div>
             )}
-            {/* Acceso al historial de días */}
-            <div className="shrink-0 border-t border-gray-200 px-4 py-2">
-              <button
-                onClick={() => { fetchCierres(); setModal("cierres"); }}
-                className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 active:bg-gray-100 rounded-2xl touch-manipulation"
-              >
-                <div className="flex items-center gap-2">
-                  <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                  </svg>
-                  <span className="text-sm font-semibold text-gray-600">Historial de días</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {diasAgrupados.length > 0 && <span className="text-xs text-gray-400">{diasAgrupados.length} día{diasAgrupados.length !== 1 ? "s" : ""}</span>}
-                  <svg className="w-4 h-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </div>
-              </button>
-            </div>
-
             <div className="shrink-0 px-4 pt-1 pb-4 flex flex-col gap-2">
               {!confirmandoCierre && !confirmandoCierreTurno && (
                 <>
@@ -1532,127 +1501,6 @@ export default function Page() {
           </div>
         </div>
       )}
-      {/* ── Pantalla: Historial de días ── */}
-      {modal === "cierres" && (
-        <div className="absolute inset-0 z-50 bg-gray-50 flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
-          {/* Cabecera */}
-          <div className="shrink-0 flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200">
-            <button onClick={() => setModal("historial")} className="w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 touch-manipulation">
-              <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-            </button>
-            <h2 className="font-bold text-gray-900 flex-1">Historial de días</h2>
-            {diasFiltrados.length > 0 && (
-              <div className="text-right">
-                <p className="text-[10px] text-gray-400 uppercase tracking-wider">Total acumulado</p>
-                <p className="text-lg font-bold text-amber-500 tabular-nums">
-                  {diasFiltrados.reduce((s, d) => s + d.total_cobrado, 0).toFixed(2)}€
-                </p>
-              </div>
-            )}
-          </div>
-
-          {/* Filtro por periodo */}
-          <div className="shrink-0 flex gap-2 px-4 py-3 bg-white border-b border-gray-200">
-            {(["semana", "mes", "año", "todo"] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFiltroHistorial(f)}
-                className={`flex-1 py-2 rounded-xl text-xs font-semibold capitalize touch-manipulation ${
-                  filtroHistorial === f ? "bg-amber-500 text-gray-900" : "bg-gray-100 text-gray-500 active:bg-gray-200"
-                }`}
-              >
-                {f}
-              </button>
-            ))}
-          </div>
-
-          {/* Lista */}
-          <div className="flex-1 overflow-y-auto px-4 py-4">
-            {loadingCierres ? (
-              <div className="flex justify-center py-12">
-                <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
-              </div>
-            ) : diasFiltrados.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
-                <svg className="w-14 h-14 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                <p className="text-sm">Sin cierres registrados</p>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3">
-                {diasFiltrados.map((d) => (
-                  <div
-                    key={d.fecha}
-                    className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden select-none"
-                    onPointerDown={() => { longPressTimer.current = setTimeout(() => setCierreParaBorrar(d.fecha), 600); }}
-                    onPointerUp={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
-                    onPointerLeave={() => { if (longPressTimer.current) clearTimeout(longPressTimer.current); }}
-                  >
-                    <div className="flex items-center gap-4 px-4 py-4">
-                      {/* Fecha */}
-                      <div className="flex flex-col items-center justify-center bg-gray-50 rounded-xl w-14 h-14 shrink-0">
-                        <span className="text-lg font-bold text-gray-800 leading-none">
-                          {new Date(d.fecha + "T12:00:00").getDate()}
-                        </span>
-                        <span className="text-[10px] text-gray-400 uppercase tracking-wide mt-0.5">
-                          {new Date(d.fecha + "T12:00:00").toLocaleDateString("es-ES", { month: "short" })}
-                        </span>
-                      </div>
-
-                      {/* Info */}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-gray-800">
-                          {new Date(d.fecha + "T12:00:00").toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" })}
-                        </p>
-                        <div className="flex items-center gap-3 mt-1">
-                          <span className="text-xs text-gray-400">
-                            {d.num_cobros} cobro{d.num_cobros !== 1 ? "s" : ""}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Total */}
-                      <div className="text-right shrink-0">
-                        <p className="text-xl font-bold text-amber-500 tabular-nums">{d.total_cobrado.toFixed(2)}€</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-                <p className="text-center text-xs text-gray-300 py-2">Mantén pulsado para borrar</p>
-              </div>
-            )}
-          </div>
-
-          {/* Confirmación borrar (long-press) */}
-          {cierreParaBorrar && (
-            <div className="absolute inset-0 bg-black/60 flex items-end z-10" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-              <div className="w-full bg-white rounded-t-3xl px-6 py-6 flex flex-col gap-3">
-                <p className="text-center text-sm text-gray-500">¿Borrar este día del historial?</p>
-                <button
-                  onClick={() => {
-                    const dia = diasAgrupados.find((d) => d.fecha === cierreParaBorrar);
-                    if (dia) for (const id of dia.ids) eliminarCierre(id);
-                    setCierreParaBorrar(null);
-                  }}
-                  className="w-full py-4 bg-red-600 active:bg-red-700 text-white rounded-2xl font-bold touch-manipulation"
-                >
-                  Sí, borrar
-                </button>
-                <button
-                  onClick={() => setCierreParaBorrar(null)}
-                  className="w-full py-3 bg-gray-100 active:bg-gray-200 text-gray-500 rounded-2xl text-sm touch-manipulation"
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
       {/* ── Modal Cocina ── */}
       {modal === "cocina" && (
         <div className="absolute inset-0 z-50 bg-gray-50 flex flex-col" style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>

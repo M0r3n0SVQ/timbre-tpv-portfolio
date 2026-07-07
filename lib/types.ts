@@ -32,14 +32,3 @@ export type Sesion = {
   caja_inicio: number;
   created_at: string;
 };
-
-export type Cierre = {
-  id: string;
-  fecha: string;
-  turno: "mañana" | "tarde";
-  caja_inicio: number;
-  total_cobrado: number;
-  num_cobros: number;
-  sesion_id: string | null;
-  created_at: string;
-};

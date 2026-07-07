@@ -59,7 +59,10 @@ export function useCobros() {
   }
 
   async function cerrarDia() {
-    const { error } = await supabase.from("cobros").delete().not("id", "is", null);
+    const inicio = new Date();
+    if (inicio.getHours() < 6) inicio.setDate(inicio.getDate() - 1);
+    inicio.setHours(6, 0, 0, 0);
+    const { error } = await supabase.from("cobros").delete().gte("created_at", inicio.toISOString());
     if (error) { setError(error.message); return false; }
     setCobros([]);
     return true;
