@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type ComandaServida = {
@@ -11,6 +11,26 @@ type ComandaServida = {
 
 export function useComandas() {
   const [servidas, setServidas] = useState<ComandaServida[]>([]);
+  // Refleja siempre el último valor conocido, actualizado de forma síncrona.
+  // El estado de React (`servidas`) no se refresca hasta el siguiente
+  // render, así que si se pulsa "servir" dos veces muy rápido, la segunda
+  // llamada podía leer el mismo cantidad_servida desfasado que la primera
+  // y perder una unidad servida. Leyendo de este ref en vez del closure de
+  // `servidas` se evita esa pérdida.
+  const servidasRef = useRef<ComandaServida[]>([]);
+  // Cola secuencial: encadena las llamadas a guardar() para que se ejecuten
+  // en orden estricto en el servidor. Sin esto, dos guardados casi
+  // simultáneos podían completarse en el orden de red equivocado y dejar en
+  // Supabase el valor más antiguo en vez del más reciente.
+  const colaRef = useRef<Promise<void>>(Promise.resolve());
+
+  async function fetchServidas() {
+    const { data } = await supabase.from("comandas_servidas").select("*");
+    if (data) {
+      setServidas(data);
+      servidasRef.current = data;
+    }
+  }
 
   useEffect(() => {
     fetchServidas();
@@ -25,34 +45,33 @@ export function useComandas() {
     return () => { supabase.removeChannel(channel); clearInterval(poll); };
   }, []);
 
-  async function fetchServidas() {
-    const { data } = await supabase.from("comandas_servidas").select("*");
-    if (data) setServidas(data);
-  }
+  function guardar(cuentaId: string, itemNombre: string, cantidad: number) {
+    // Optimistic update, síncrono, a partir del ref (no del estado de React).
+    const exists = servidasRef.current.some((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre);
+    const next = exists
+      ? servidasRef.current.map((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre ? { ...s, cantidad_servida: cantidad } : s)
+      : [...servidasRef.current, { cuenta_id: cuentaId, item_nombre: itemNombre, cantidad_servida: cantidad }];
+    servidasRef.current = next;
+    setServidas(next);
 
-  async function guardar(cuentaId: string, itemNombre: string, cantidad: number) {
-    // Optimistic update
-    setServidas((prev) => {
-      const exists = prev.some((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre);
-      if (exists) return prev.map((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre ? { ...s, cantidad_servida: cantidad } : s);
-      return [...prev, { cuenta_id: cuentaId, item_nombre: itemNombre, cantidad_servida: cantidad }];
+    colaRef.current = colaRef.current.then(async () => {
+      // DELETE + INSERT: infalible sin importar si la fila existe o no
+      await supabase.from("comandas_servidas")
+        .delete()
+        .eq("cuenta_id", cuentaId)
+        .eq("item_nombre", itemNombre);
+
+      await supabase.from("comandas_servidas")
+        .insert({ cuenta_id: cuentaId, item_nombre: itemNombre, cantidad_servida: cantidad });
+
+      // Confirmar estado real desde Supabase
+      await fetchServidas();
     });
-
-    // DELETE + INSERT: infalible sin importar si la fila existe o no
-    await supabase.from("comandas_servidas")
-      .delete()
-      .eq("cuenta_id", cuentaId)
-      .eq("item_nombre", itemNombre);
-
-    await supabase.from("comandas_servidas")
-      .insert({ cuenta_id: cuentaId, item_nombre: itemNombre, cantidad_servida: cantidad });
-
-    // Confirmar estado real desde Supabase
-    await fetchServidas();
+    return colaRef.current;
   }
 
   async function servirUno(cuentaId: string, itemNombre: string) {
-    const actual = servidas.find((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre)?.cantidad_servida ?? 0;
+    const actual = servidasRef.current.find((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre)?.cantidad_servida ?? 0;
     await guardar(cuentaId, itemNombre, actual + 1);
   }
 
@@ -61,9 +80,22 @@ export function useComandas() {
   }
 
   async function limpiarCuenta(cuentaId: string) {
-    setServidas((prev) => prev.filter((s) => s.cuenta_id !== cuentaId));
+    const next = servidasRef.current.filter((s) => s.cuenta_id !== cuentaId);
+    servidasRef.current = next;
+    setServidas(next);
     await supabase.from("comandas_servidas").delete().eq("cuenta_id", cuentaId);
   }
 
-  return { servidas, servirUno, servirTodo, limpiarCuenta };
+  // Limpia el registro de servido de un solo item (cuando se quita del ticket
+  // sin borrar la cuenta entera). Evita que si se repide el mismo plato más
+  // tarde, un cantidad_servida "huérfano" haga que el pendiente salga <= 0
+  // y el pedido no aparezca en cocina.
+  async function limpiarItem(cuentaId: string, itemNombre: string) {
+    const next = servidasRef.current.filter((s) => !(s.cuenta_id === cuentaId && s.item_nombre === itemNombre));
+    servidasRef.current = next;
+    setServidas(next);
+    await supabase.from("comandas_servidas").delete().eq("cuenta_id", cuentaId).eq("item_nombre", itemNombre);
+  }
+
+  return { servidas, servirUno, servirTodo, limpiarCuenta, limpiarItem };
 }

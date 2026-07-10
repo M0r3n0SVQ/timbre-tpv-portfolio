@@ -12,11 +12,13 @@ import type { Cobro, Cuenta, Item } from "@/lib/types";
 type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
 type LineaParcial = { nombre: string; precio: number; max: number; cobrar: number };
 
+const CATS_COCINA = ["Montaditos", "Tapas"];
+
 export default function Page() {
-  const { cuentas, loading, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, refetch: refetchCuentas } = useCuentas();
-  const { cobros, cobrarCuenta, cerrarDia, restaurarCobros, refetch: refetchCobros } = useCobros();
-  const { sesion, loading: loadingSesion, iniciarTurno, cerrarTurno, actualizarCaja } = useSesion();
-  const { servidas, servirUno, servirTodo, limpiarCuenta } = useComandas();
+  const { cuentas, loading, error: errorCuentas, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, refetch: refetchCuentas } = useCuentas();
+  const { cobros, error: errorCobros, cobrarCuenta, cerrarDia, restaurarCobros, refetch: refetchCobros } = useCobros();
+  const { sesion, loading: loadingSesion, error: errorSesion, iniciarTurno, cerrarTurno, actualizarCaja } = useSesion();
+  const { servidas, servirUno, servirTodo, limpiarCuenta, limpiarItem } = useComandas();
 
   const [idActiva, setIdActiva] = useState<string | null>(null);
 
@@ -50,7 +52,25 @@ export default function Page() {
   const [efectivo, setEfectivo] = useState("");
   const [personas, setPersonas] = useState(2);
   const [confirmandoCierre, setConfirmandoCierre] = useState(false);
+  const [cerrandoDia, setCerrandoDia] = useState(false);
+  const [confirmandoRestaurar, setConfirmandoRestaurar] = useState(false);
+  const [restaurando, setRestaurando] = useState(false);
   const [cobrando, setCobrando] = useState(false);
+
+  // Aviso de errores de red/Supabase en acciones del usuario (cobrar, guardar…).
+  // Sin esto, si Supabase falla en silencio el camarero no se entera de que
+  // algo no se ha guardado de verdad.
+  const [toastError, setToastError] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const ultimo = [errorCuentas, errorCobros, errorSesion]
+      .filter((e): e is NonNullable<typeof e> => e !== null)
+      .sort((a, b) => b.id - a.id)[0];
+    if (!ultimo) return;
+    setToastError(ultimo.message);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToastError(null), 7000);
+  }, [errorCuentas, errorCobros, errorSesion]);
 
   const [vistaMovil, setVistaMovil] = useState<"carta" | "ticket">("carta");
 
@@ -135,12 +155,14 @@ export default function Page() {
   }, [listaCompra]);
 
   // Backup automático en localStorage + Supabase
-  const [backupTimestamp, setBackupTimestamp] = useState<string | null>(null);
+  const [backupTimestamp, setBackupTimestamp] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const raw = localStorage.getItem("timbre-backup-v1");
+      return raw ? (JSON.parse(raw).timestamp ?? null) : null;
+    } catch { return null; }
+  });
   const backupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    const raw = localStorage.getItem("timbre-backup-v1");
-    if (raw) { try { setBackupTimestamp(JSON.parse(raw).timestamp); } catch {} }
-  }, []);
   useEffect(() => {
     if (loading) return;
     const ts = new Date().toISOString();
@@ -174,6 +196,16 @@ export default function Page() {
     }
   }, [cuentas, servidas]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Si la cuenta activa se cobra desde otro dispositivo mientras está
+  // abierta aquí, deseleccionarla automáticamente (vuelve al estado "sin
+  // cuenta elegida"). Nunca salta a otra cuenta real, para no arriesgarse a
+  // cobrar la cuenta equivocada sin darse cuenta del cambio.
+  useEffect(() => {
+    if (idActiva && cuentas.find((c) => c.id === idActiva)?.pagada) {
+      setIdActiva(null);
+    }
+  }, [idActiva, cuentas]);
+
   // ── Computed ───────────────────────────────────────────────
   const cuentaActiva = cuentas.find((c) => c.id === idActiva) ?? null;
   const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria);
@@ -191,7 +223,6 @@ export default function Page() {
     ? { nombre: cuentaActiva.nombre, items: cuentaActiva.items, total: cuentaActiva.total, fecha: new Date() }
     : null;
 
-  const CATS_COCINA = ["Montaditos", "Tapas"];
   const pedidosPendientes = cuentas.flatMap((cuenta) =>
     cuenta.items
       .filter((item) => {
@@ -237,7 +268,7 @@ export default function Page() {
     if (!cuentaActiva) return;
     await eliminarCuenta(cuentaActiva.id);
     await limpiarCuenta(cuentaActiva.id);
-    const siguiente = cuentas.find((c) => c.id !== cuentaActiva.id);
+    const siguiente = cuentas.find((c) => c.id !== cuentaActiva.id && !c.pagada);
     setIdActiva(siguiente?.id ?? null);
     setConfirmandoBorrar(false);
   }
@@ -263,30 +294,38 @@ export default function Page() {
 
   async function handleSumar(nombre: string, precio: number) {
     if (!cuentaActiva) return;
+    const now = new Date().toISOString();
     await actualizarCuenta(
       cuentaActiva.id,
-      cuentaActiva.items.map((i) =>
-        i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad + 1 } : i
-      )
+      cuentaActiva.items.map((i) => {
+        if (i.nombre !== nombre || i.precio !== precio) return i;
+        // Igual que en handleAgregar (carta): si el plato ya salió entero de
+        // cocina, esta unidad nueva es un pedido nuevo y va al final de la
+        // cola, no al principio por conservar el added_at antiguo.
+        const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === nombre);
+        const todoServido = (servida?.cantidad_servida ?? 0) >= i.cantidad;
+        return { ...i, cantidad: i.cantidad + 1, ...(todoServido ? { added_at: now } : {}) };
+      })
     );
   }
 
   async function handleRestar(nombre: string, precio: number) {
     if (!cuentaActiva) return;
-    await actualizarCuenta(
-      cuentaActiva.id,
-      cuentaActiva.items
-        .map((i) => (i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad - 1 } : i))
-        .filter((i) => i.cantidad > 0)
-    );
+    const items = cuentaActiva.items
+      .map((i) => (i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad - 1 } : i))
+      .filter((i) => i.cantidad > 0);
+    await actualizarCuenta(cuentaActiva.id, items);
+    // Si el item desaparece del ticket, limpiar su registro de "servido" para
+    // que un pedido futuro con el mismo nombre no herede un cantidad_servida
+    // que lo deje oculto de cocina.
+    if (!items.some((i) => i.nombre === nombre)) await limpiarItem(cuentaActiva.id, nombre);
   }
 
   async function handleEliminarLinea(nombre: string, precio: number) {
     if (!cuentaActiva) return;
-    await actualizarCuenta(
-      cuentaActiva.id,
-      cuentaActiva.items.filter((i) => !(i.nombre === nombre && i.precio === precio))
-    );
+    const items = cuentaActiva.items.filter((i) => !(i.nombre === nombre && i.precio === precio));
+    await actualizarCuenta(cuentaActiva.id, items);
+    if (!items.some((i) => i.nombre === nombre)) await limpiarItem(cuentaActiva.id, nombre);
   }
 
   async function handleAgregarLibre() {
@@ -314,7 +353,9 @@ export default function Page() {
   }
 
   async function handleCobrar() {
-    if (!cuentaActiva || cobrando) return;
+    // cuentaActiva.pagada: alguien ya la cobró (p.ej. desde otro dispositivo)
+    // mientras estaba abierta aquí. No volver a cobrarla.
+    if (!cuentaActiva || cobrando || cuentaActiva.pagada) return;
     setCobrando(true);
     await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion");
     const tieneCocina = cuentaActiva.items.some((item) => {
@@ -350,7 +391,7 @@ export default function Page() {
   }
 
   async function handleCobrarParcial() {
-    if (!cuentaActiva || cobrando) return;
+    if (!cuentaActiva || cobrando || cuentaActiva.pagada) return;
     const itemsACobrar = seleccionParcial
       .filter((l) => l.cobrar > 0)
       .map((l) => ({ nombre: l.nombre, precio: l.precio, cantidad: l.cobrar }));
@@ -379,12 +420,20 @@ export default function Page() {
       setIdActiva(cuentas.find((c) => c.id !== cuentaActiva.id && !c.pagada)?.id ?? null);
     } else {
       await actualizarCuenta(cuentaActiva.id, restantes);
+      // Igual que en handleRestar/handleEliminarLinea: si el cobro parcial deja
+      // algún item en 0 unidades, limpiar su registro de servido.
+      const nombresRestantes = new Set(restantes.map((i) => i.nombre));
+      for (const nombre of new Set(cuentaActiva.items.map((i) => i.nombre))) {
+        if (!nombresRestantes.has(nombre)) await limpiarItem(cuentaActiva.id, nombre);
+      }
     }
     setModal(null);
     setCobrando(false);
   }
 
   async function handleCerrarDia() {
+    if (cerrandoDia) return;
+    setCerrandoDia(true);
     for (const cuenta of cuentas) {
       await limpiarCuenta(cuenta.id);
       await eliminarCuenta(cuenta.id);
@@ -394,6 +443,7 @@ export default function Page() {
     setIdActiva(null);
     setConfirmandoCierre(false);
     setModal(null);
+    setCerrandoDia(false);
   }
 
   // ── Cobro rápido ──────────────────────────────────────────
@@ -473,11 +523,15 @@ export default function Page() {
       if (data?.datos) backup = data.datos;
     }
     if (!backup) return;
+    // No recrear cuentas que ya están abiertas con ese nombre (evita duplicar
+    // cuentas si se pulsa Restaurar más de una vez o el backup está desfasado).
+    const nombresAbiertas = new Set(cuentas.filter((c) => !c.pagada).map((c) => c.nombre));
     for (const c of (backup.cuentas ?? [])) {
-      if (c.pagada) continue;
+      if (c.pagada || nombresAbiertas.has(c.nombre)) continue;
       const nueva = await crearCuenta(c.nombre);
       if (nueva && c.items?.length) await actualizarCuenta(nueva.id, c.items);
     }
+    // restaurarCobros hace upsert por id, así que aunque se repita no duplica.
     if (backup.cobros?.length) await restaurarCobros(backup.cobros);
   }
 
@@ -509,10 +563,13 @@ export default function Page() {
   // ── Juntar cuentas ────────────────────────────────────────
 
   async function handleJuntarCuentas() {
-    if (!cuentaActiva || !idCuentaJuntar || cobrando) return;
+    // No añadir artículos sin cobrar a una cuenta que ya fue cobrada (p.ej.
+    // desde otro dispositivo): quedarían pendientes de cocina pero nunca se facturarían.
+    if (!cuentaActiva || !idCuentaJuntar || cobrando || cuentaActiva.pagada) return;
     const cuentaFuente = cuentas.find((c) => c.id === idCuentaJuntar);
     if (!cuentaFuente) return;
     setCobrando(true);
+    const now = new Date().toISOString();
     const itemsMerged = [...cuentaActiva.items];
     for (const item of cuentaFuente.items) {
       // Solo transferir la cantidad que aún no ha salido de cocina
@@ -520,8 +577,18 @@ export default function Page() {
       const pendienteFuente = item.cantidad - (servidaFuente?.cantidad_servida ?? 0);
       if (pendienteFuente <= 0) continue;
       const existente = itemsMerged.find((i) => i.nombre === item.nombre && i.precio === item.precio);
-      if (existente) existente.cantidad += pendienteFuente;
-      else itemsMerged.push({ ...item, cantidad: pendienteFuente });
+      if (existente) {
+        // Si la línea que ya tenía la cuenta destino estaba totalmente
+        // servida, las unidades que llegan de la fuente son un pedido nuevo:
+        // resetear added_at para que no se cuelen al principio de cocina
+        // (mismo caso que handleAgregar/handleSumar).
+        const servidaDestino = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === item.nombre);
+        const destinoTodoServido = (servidaDestino?.cantidad_servida ?? 0) >= existente.cantidad;
+        existente.cantidad += pendienteFuente;
+        if (destinoTodoServido) existente.added_at = now;
+      } else {
+        itemsMerged.push({ ...item, cantidad: pendienteFuente });
+      }
     }
     await actualizarCuenta(cuentaActiva.id, itemsMerged);
     await limpiarCuenta(idCuentaJuntar);
@@ -536,6 +603,23 @@ export default function Page() {
   return (
     <div className="flex flex-col bg-gray-50 text-gray-900 overflow-hidden select-none relative"
          style={{ height: "100dvh" }}>
+
+      {/* ── Aviso de error de red/Supabase ── */}
+      {toastError && (
+        <div
+          className="absolute left-3 right-3 z-[200] flex items-start gap-2 bg-red-600 text-white rounded-2xl px-4 py-3 shadow-2xl"
+          style={{ top: "max(env(safe-area-inset-top), 0.75rem)" }}
+        >
+          <span className="text-lg leading-none shrink-0">⚠</span>
+          <p className="flex-1 text-sm leading-snug">{toastError}</p>
+          <button
+            onClick={() => setToastError(null)}
+            className="shrink-0 text-white/80 active:text-white text-sm touch-manipulation"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* ── Header ── */}
       <header
@@ -1313,7 +1397,7 @@ export default function Page() {
             <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mt-3 sm:hidden" />
             <div className="flex items-center justify-between px-5 pt-4 pb-3 shrink-0">
               <h2 className="text-xl font-bold">Historial del día</h2>
-              <button onClick={() => { setModal(null); setConfirmandoCierre(false); setConfirmandoCierreTurno(false); }} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 text-sm touch-manipulation">✕</button>
+              <button onClick={() => { setModal(null); setConfirmandoCierre(false); setConfirmandoCierreTurno(false); setConfirmandoRestaurar(false); }} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 text-sm touch-manipulation">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto scroll-touch px-4 pb-2 flex flex-col gap-3">
               {cobros.length === 0 ? (
@@ -1452,14 +1536,14 @@ export default function Page() {
                   <button onClick={handleExportar} className="text-xs px-3 py-1.5 bg-gray-100 active:bg-gray-200 rounded-lg text-gray-500 touch-manipulation font-medium">
                     Exportar JSON
                   </button>
-                  <button onClick={handleRestaurar} className="text-xs px-3 py-1.5 bg-amber-100 active:bg-amber-200 rounded-lg text-amber-700 touch-manipulation font-medium">
+                  <button onClick={() => setConfirmandoRestaurar(true)} disabled={restaurando} className="text-xs px-3 py-1.5 bg-amber-100 active:bg-amber-200 disabled:opacity-50 rounded-lg text-amber-700 touch-manipulation font-medium">
                     Restaurar
                   </button>
                 </div>
               </div>
             )}
             <div className="shrink-0 px-4 pt-1 pb-4 flex flex-col gap-2">
-              {!confirmandoCierre && !confirmandoCierreTurno && (
+              {!confirmandoCierre && !confirmandoCierreTurno && !confirmandoRestaurar && (
                 <>
                   <button
                     onClick={() => setConfirmandoCierreTurno(true)}
@@ -1471,6 +1555,26 @@ export default function Page() {
                     Cerrar turno
                   </button>
                   <button onClick={() => setConfirmandoCierre(true)} className="w-full py-3.5 bg-red-900/40 active:bg-red-800/60 text-red-400 rounded-2xl text-sm font-semibold touch-manipulation">Cerrar día</button>
+                </>
+              )}
+              {confirmandoRestaurar && (
+                <>
+                  <p className="text-center text-sm text-gray-400 pb-1">
+                    ¿Restaurar la última copia de seguridad{backupTimestamp ? ` (${new Date(backupTimestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })})` : ""}?
+                  </p>
+                  <button
+                    onClick={async () => {
+                      setRestaurando(true);
+                      await handleRestaurar();
+                      setRestaurando(false);
+                      setConfirmandoRestaurar(false);
+                    }}
+                    disabled={restaurando}
+                    className="w-full py-4 bg-amber-500 active:bg-amber-600 disabled:opacity-50 text-black rounded-2xl text-sm font-bold touch-manipulation"
+                  >
+                    {restaurando ? "Restaurando…" : "Sí, restaurar"}
+                  </button>
+                  <button onClick={() => setConfirmandoRestaurar(false)} disabled={restaurando} className="w-full py-3 bg-gray-100 active:bg-gray-200 disabled:opacity-50 text-gray-400 rounded-2xl text-sm touch-manipulation">Cancelar</button>
                 </>
               )}
               {confirmandoCierreTurno && (
@@ -1493,8 +1597,10 @@ export default function Page() {
                       ⚠ Hay {cuentas.length} cuenta{cuentas.length !== 1 ? "s" : ""} abierta{cuentas.length !== 1 ? "s" : ""} — también se eliminarán.
                     </p>
                   )}
-                  <button onClick={handleCerrarDia} className="w-full py-4 bg-red-600 active:bg-red-700 text-gray-900 rounded-2xl text-sm font-bold touch-manipulation">Sí, cerrar y borrar historial</button>
-                  <button onClick={() => setConfirmandoCierre(false)} className="w-full py-4 bg-gray-100 active:bg-gray-200 text-gray-400 rounded-2xl text-sm touch-manipulation">Cancelar</button>
+                  <button onClick={handleCerrarDia} disabled={cerrandoDia} className="w-full py-4 bg-red-600 active:bg-red-700 disabled:opacity-50 text-gray-900 rounded-2xl text-sm font-bold touch-manipulation">
+                    {cerrandoDia ? "Cerrando…" : "Sí, cerrar y borrar historial"}
+                  </button>
+                  <button onClick={() => setConfirmandoCierre(false)} disabled={cerrandoDia} className="w-full py-4 bg-gray-100 active:bg-gray-200 disabled:opacity-50 text-gray-400 rounded-2xl text-sm touch-manipulation">Cancelar</button>
                 </>
               )}
             </div>

@@ -1,13 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Cuenta, Item } from "@/lib/types";
+
+export type HookError = { message: string; id: number };
 
 export function useCuentas() {
   const [cuentas, setCuentas] = useState<Cuenta[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // id incremental para que dos errores seguidos con el mismo mensaje (p.ej.
+  // "Failed to fetch" repetido) sigan disparando el aviso en pantalla cada vez.
+  const [error, setError] = useState<HookError | null>(null);
+  const errorSeq = useRef(0);
+  function reportError(message: string) {
+    errorSeq.current += 1;
+    setError({ message, id: errorSeq.current });
+  }
 
   useEffect(() => {
     fetchCuentas();
@@ -34,8 +43,10 @@ export function useCuentas() {
       .select("*")
       .gte("created_at", inicio.toISOString())
       .order("created_at", { ascending: true });
-    if (error) setError(error.message);
-    else setCuentas(data ?? []);
+    // No se avisa con un toast por fallos del polling/realtime en segundo
+    // plano (se reintenta solo cada 5s); solo se avisa de fallos en acciones
+    // directas del usuario (crear/actualizar/cobrar…), ahí abajo.
+    if (!error) setCuentas(data ?? []);
     setLoading(false);
   }
 
@@ -45,7 +56,7 @@ export function useCuentas() {
       .insert({ nombre, items: [], total: 0 })
       .select()
       .single();
-    if (error) { setError(error.message); return null; }
+    if (error) { reportError(error.message); return null; }
     setCuentas((prev) => [...prev, data as Cuenta]);
     return data as Cuenta;
   }
@@ -65,7 +76,7 @@ export function useCuentas() {
       .single();
 
     if (error) {
-      setError(error.message);
+      reportError(error.message);
       fetchCuentas();
       return null;
     }
@@ -78,21 +89,21 @@ export function useCuentas() {
   async function renombrarCuenta(id: string, nombre: string) {
     setCuentas((prev) => prev.map((c) => (c.id === id ? { ...c, nombre } : c)));
     const { error } = await supabase.from("cuentas").update({ nombre }).eq("id", id);
-    if (error) { setError(error.message); fetchCuentas(); return false; }
+    if (error) { reportError(error.message); fetchCuentas(); return false; }
     return true;
   }
 
   async function eliminarCuenta(id: string) {
     setCuentas((prev) => prev.filter((c) => c.id !== id));
     const { error } = await supabase.from("cuentas").delete().eq("id", id);
-    if (error) { setError(error.message); fetchCuentas(); return false; }
+    if (error) { reportError(error.message); fetchCuentas(); return false; }
     return true;
   }
 
   async function marcarPagada(id: string) {
     setCuentas((prev) => prev.map((c) => c.id === id ? { ...c, pagada: true } : c));
     const { error } = await supabase.from("cuentas").update({ pagada: true }).eq("id", id);
-    if (error) { setError(error.message); fetchCuentas(); return false; }
+    if (error) { reportError(error.message); fetchCuentas(); return false; }
     return true;
   }
 

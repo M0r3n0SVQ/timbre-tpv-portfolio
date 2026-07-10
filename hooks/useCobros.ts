@@ -1,13 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Cobro, Cuenta, Item } from "@/lib/types";
+import type { HookError } from "@/hooks/useCuentas";
 
 export function useCobros() {
   const [cobros, setCobros] = useState<Cobro[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<HookError | null>(null);
+  const errorSeq = useRef(0);
+  function reportError(message: string) {
+    errorSeq.current += 1;
+    setError({ message, id: errorSeq.current });
+  }
 
   useEffect(() => {
     fetchCobros();
@@ -35,8 +41,10 @@ export function useCobros() {
       .select("*")
       .gte("created_at", inicio.toISOString())
       .order("created_at", { ascending: true });
-    if (error) setError(error.message);
-    else setCobros(data ?? []);
+    // Fallos del polling/realtime en segundo plano no generan aviso (se
+    // reintenta solo cada 5s); solo se avisa de fallos en acciones directas
+    // del usuario, ahí abajo.
+    if (!error) setCobros(data ?? []);
     setLoading(false);
   }
 
@@ -53,7 +61,7 @@ export function useCobros() {
       })
       .select()
       .single();
-    if (error) { setError(error.message); return null; }
+    if (error) { reportError(`No se pudo guardar el cobro de "${cuenta.nombre}": ${error.message}`); return null; }
     setCobros((prev) => [...prev, data as Cobro]);
     return data as Cobro;
   }
@@ -63,21 +71,29 @@ export function useCobros() {
     if (inicio.getHours() < 6) inicio.setDate(inicio.getDate() - 1);
     inicio.setHours(6, 0, 0, 0);
     const { error } = await supabase.from("cobros").delete().gte("created_at", inicio.toISOString());
-    if (error) { setError(error.message); return false; }
+    if (error) { reportError(`No se pudo cerrar el día: ${error.message}`); return false; }
     setCobros([]);
     return true;
   }
 
   async function restaurarCobros(cobrosBackup: Cobro[]) {
+    // upsert por id (no insert): si el cobro ya existe en la base de datos
+    // (p.ej. al pulsar "Restaurar" más de una vez) se sobreescribe en vez de
+    // duplicarse. Antes esto insertaba una fila nueva cada vez y doblaba
+    // el total del día.
+    let fallos = 0;
     for (const c of cobrosBackup) {
-      await supabase.from("cobros").insert({
+      const { error } = await supabase.from("cobros").upsert({
+        id: c.id,
         nombre_cuenta: c.nombre_cuenta,
         items: c.items,
         total: c.total,
         sesion_id: c.sesion_id,
         created_at: c.created_at,
-      });
+      }, { onConflict: "id" });
+      if (error) fallos++;
     }
+    if (fallos > 0) reportError(`No se pudieron restaurar ${fallos} cobro${fallos !== 1 ? "s" : ""} de la copia de seguridad.`);
     await fetchCobros();
   }
 
