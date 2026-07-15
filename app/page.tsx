@@ -5,18 +5,19 @@ import { useCuentas } from "@/hooks/useCuentas";
 import { useCobros } from "@/hooks/useCobros";
 import { useSesion } from "@/hooks/useSesion";
 import { useComandas } from "@/hooks/useComandas";
+import NumPad from "@/components/NumPad";
 import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import { supabase } from "@/lib/supabase";
+import { claveItem } from "@/lib/itemIdentity";
+import { CATS_COCINA, categoriaCocina, esItemCocina, tieneCocinaPendiente, pendienteDe } from "@/lib/cocina";
 import type { Cobro, Cuenta, Item } from "@/lib/types";
 
 type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
-type LineaParcial = { nombre: string; precio: number; max: number; cobrar: number };
-
-const CATS_COCINA = ["Montaditos", "Tapas"];
+type LineaParcial = { nombre: string; precio: number; categoria?: string; max: number; cobrar: number };
 
 export default function Page() {
-  const { cuentas, loading, error: errorCuentas, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, refetch: refetchCuentas } = useCuentas();
-  const { cobros, error: errorCobros, cobrarCuenta, cerrarDia, restaurarCobros, refetch: refetchCobros } = useCobros();
+  const { cuentas, loading, error: errorCuentas, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada } = useCuentas();
+  const { cobros, error: errorCobros, cobrarCuenta, cerrarDia, restaurarCobros } = useCobros();
   const { sesion, loading: loadingSesion, error: errorSesion, iniciarTurno, cerrarTurno, actualizarCaja } = useSesion();
   const { servidas, servirUno, servirTodo, limpiarCuenta, limpiarItem } = useComandas();
 
@@ -83,7 +84,6 @@ export default function Page() {
   const [listaCompra, setListaCompra] = useState<{ texto: string; hecho: boolean }[]>([]);
   const [nuevoItemCompra, setNuevoItemCompra] = useState("");
   const inputCompraRef = useRef<HTMLInputElement>(null);
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Historial: cobro seleccionado para ver su ticket
   const [cobroParaTicket, setCobroParaTicket] = useState<Cobro | null>(null);
@@ -183,13 +183,7 @@ export default function Page() {
   useEffect(() => {
     const pagadas = cuentas.filter((c) => c.pagada);
     for (const cuenta of pagadas) {
-      const tienePendientes = cuenta.items.some((item) => {
-        const cat = PRODUCTOS.find((p) => p.nombre === item.nombre)?.categoria ?? item.categoria;
-        if (!cat || !CATS_COCINA.includes(cat)) return false;
-        const servida = servidas.find((s) => s.cuenta_id === cuenta.id && s.item_nombre === item.nombre);
-        return item.cantidad - (servida?.cantidad_servida ?? 0) > 0;
-      });
-      if (!tienePendientes) {
+      if (!tieneCocinaPendiente(cuenta.items, servidas, cuenta.id)) {
         eliminarCuenta(cuenta.id);
         limpiarCuenta(cuenta.id);
       }
@@ -208,8 +202,8 @@ export default function Page() {
 
   // ── Computed ───────────────────────────────────────────────
   const cuentaActiva = cuentas.find((c) => c.id === idActiva) ?? null;
-  const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria);
-  const productosRapidosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoriaRapida);
+  const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  const productosRapidosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoriaRapida).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const totalDia = cobros.reduce((s, c) => s + Number(c.total), 0);
   const cambio = parseFloat(efectivo || "0") - (cuentaActiva?.total ?? 0);
   const sinItems = (cuentaActiva?.items.length ?? 0) === 0;
@@ -225,16 +219,15 @@ export default function Page() {
 
   const pedidosPendientes = cuentas.flatMap((cuenta) =>
     cuenta.items
-      .filter((item) => {
-        const cat = item.categoria || PRODUCTOS.find((pr) => pr.nombre === item.nombre)?.categoria;
-        return cat && CATS_COCINA.includes(cat);
-      })
-      .map((item) => {
-        const categoria = (item.categoria || PRODUCTOS.find((pr) => pr.nombre === item.nombre)?.categoria) ?? "";
-        const servida = servidas.find((s) => s.cuenta_id === cuenta.id && s.item_nombre === item.nombre);
-        const pendiente = item.cantidad - (servida?.cantidad_servida ?? 0);
-        return { cuentaId: cuenta.id, cuentaNombre: cuenta.nombre, item, pendiente, categoria, pagada: !!cuenta.pagada };
-      })
+      .filter(esItemCocina)
+      .map((item) => ({
+        cuentaId: cuenta.id,
+        cuentaNombre: cuenta.nombre,
+        item,
+        pendiente: pendienteDe(item, servidas, cuenta.id),
+        categoria: categoriaCocina(item),
+        pagada: !!cuenta.pagada,
+      }))
       .filter((x) => x.pendiente > 0)
   ).sort((a, b) => {
     const ta = a.item.added_at ? new Date(a.item.added_at).getTime() : Infinity;
@@ -243,11 +236,6 @@ export default function Page() {
   });
 
   // ── Handlers ──────────────────────────────────────────────
-
-  function handleRefrescar() {
-    refetchCuentas();
-    refetchCobros();
-  }
 
   async function handleCrearCuenta() {
     if (!nuevoNombre.trim()) return;
@@ -276,15 +264,18 @@ export default function Page() {
   async function handleAgregar(nombre: string, precio: number, categoria?: string) {
     if (!cuentaActiva) return;
     const now = new Date().toISOString();
-    const existe = cuentaActiva.items.find((i) => i.nombre === nombre && i.precio === precio);
+    // nombre+precio no basta para identificar la línea: hace falta también
+    // la categoría (varios platos comparten nombre Y precio entre Montaditos
+    // y Tapas, p.ej. "Lomo orza salmorejo" a 3.40€ en las dos).
+    const existe = cuentaActiva.items.find((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(nombre, precio, categoria));
     const extra = categoria ? { categoria } : {};
     const items = existe
       ? cuentaActiva.items.map((i) => {
-          if (i.nombre !== nombre || i.precio !== precio) return i;
+          if (claveItem(i.nombre, i.precio, i.categoria) !== claveItem(nombre, precio, categoria)) return i;
           // Si todas las unidades ya fueron servidas (pendiente = 0), esta nueva
           // unidad es un pedido nuevo: resetear added_at para que vaya al final
           // de la cola de cocina, no al principio por tener un timestamp antiguo.
-          const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === nombre);
+          const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(nombre, precio, categoria));
           const todoServido = (servida?.cantidad_servida ?? 0) >= i.cantidad;
           return { ...i, ...extra, cantidad: i.cantidad + 1, ...(todoServido ? { added_at: now } : {}) };
         })
@@ -292,40 +283,42 @@ export default function Page() {
     await actualizarCuenta(cuentaActiva.id, items);
   }
 
-  async function handleSumar(nombre: string, precio: number) {
+  async function handleSumar(nombre: string, precio: number, categoria?: string) {
     if (!cuentaActiva) return;
     const now = new Date().toISOString();
     await actualizarCuenta(
       cuentaActiva.id,
       cuentaActiva.items.map((i) => {
-        if (i.nombre !== nombre || i.precio !== precio) return i;
+        if (claveItem(i.nombre, i.precio, i.categoria) !== claveItem(nombre, precio, categoria)) return i;
         // Igual que en handleAgregar (carta): si el plato ya salió entero de
         // cocina, esta unidad nueva es un pedido nuevo y va al final de la
         // cola, no al principio por conservar el added_at antiguo.
-        const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === nombre);
+        const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(nombre, precio, categoria));
         const todoServido = (servida?.cantidad_servida ?? 0) >= i.cantidad;
         return { ...i, cantidad: i.cantidad + 1, ...(todoServido ? { added_at: now } : {}) };
       })
     );
   }
 
-  async function handleRestar(nombre: string, precio: number) {
+  async function handleRestar(nombre: string, precio: number, categoria?: string) {
     if (!cuentaActiva) return;
     const items = cuentaActiva.items
-      .map((i) => (i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad - 1 } : i))
+      .map((i) => (claveItem(i.nombre, i.precio, i.categoria) === claveItem(nombre, precio, categoria) ? { ...i, cantidad: i.cantidad - 1 } : i))
       .filter((i) => i.cantidad > 0);
     await actualizarCuenta(cuentaActiva.id, items);
     // Si el item desaparece del ticket, limpiar su registro de "servido" para
-    // que un pedido futuro con el mismo nombre no herede un cantidad_servida
-    // que lo deje oculto de cocina.
-    if (!items.some((i) => i.nombre === nombre)) await limpiarItem(cuentaActiva.id, nombre);
+    // que un pedido futuro no herede un cantidad_servida que lo deje oculto
+    // de cocina. Se compara por nombre+precio+categoria: puede haber otra
+    // línea con el mismo nombre en otra categoría (p.ej. "Queso" en
+    // Montaditos y en Tapas) que no debe verse afectada.
+    if (!items.some((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(nombre, precio, categoria))) await limpiarItem(cuentaActiva.id, nombre, precio, categoria ?? "");
   }
 
-  async function handleEliminarLinea(nombre: string, precio: number) {
+  async function handleEliminarLinea(nombre: string, precio: number, categoria?: string) {
     if (!cuentaActiva) return;
-    const items = cuentaActiva.items.filter((i) => !(i.nombre === nombre && i.precio === precio));
+    const items = cuentaActiva.items.filter((i) => claveItem(i.nombre, i.precio, i.categoria) !== claveItem(nombre, precio, categoria));
     await actualizarCuenta(cuentaActiva.id, items);
-    if (!items.some((i) => i.nombre === nombre)) await limpiarItem(cuentaActiva.id, nombre);
+    if (!items.some((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(nombre, precio, categoria))) await limpiarItem(cuentaActiva.id, nombre, precio, categoria ?? "");
   }
 
   async function handleAgregarLibre() {
@@ -333,14 +326,14 @@ export default function Page() {
     const precio = parseFloat(libreImporte);
     if (precio <= 0) return;
     const nombre = libreNombre.trim() || `Varios ${precio.toFixed(2)}€`;
-    const existe = cuentaActiva.items.find((i) => i.nombre === nombre);
+    const existe = cuentaActiva.items.find((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(nombre, precio, libreCategoria || undefined));
     const now = new Date().toISOString();
     const nuevoItem: Item = { nombre, precio, cantidad: 1, added_at: now, ...(libreCategoria ? { categoria: libreCategoria } : {}) };
     const extraLibre = libreCategoria ? { categoria: libreCategoria } : {};
     const items = existe
       ? cuentaActiva.items.map((i) => {
-          if (i.nombre !== nombre) return i;
-          const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === nombre);
+          if (claveItem(i.nombre, i.precio, i.categoria) !== claveItem(nombre, precio, libreCategoria || undefined)) return i;
+          const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(nombre, i.precio, i.categoria));
           const todoServido = (servida?.cantidad_servida ?? 0) >= i.cantidad;
           return { ...i, ...extraLibre, cantidad: i.cantidad + 1, ...(todoServido ? { added_at: now } : {}) };
         })
@@ -358,12 +351,7 @@ export default function Page() {
     if (!cuentaActiva || cobrando || cuentaActiva.pagada) return;
     setCobrando(true);
     await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion");
-    const tieneCocina = cuentaActiva.items.some((item) => {
-      const cat = PRODUCTOS.find((p) => p.nombre === item.nombre)?.categoria ?? item.categoria;
-      if (!cat || !CATS_COCINA.includes(cat)) return false;
-      const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === item.nombre);
-      return item.cantidad - (servida?.cantidad_servida ?? 0) > 0;
-    });
+    const tieneCocina = tieneCocinaPendiente(cuentaActiva.items, servidas, cuentaActiva.id);
     if (tieneCocina) {
       await marcarPagada(cuentaActiva.id);
     } else {
@@ -383,6 +371,7 @@ export default function Page() {
       cuentaActiva.items.map((i) => ({
         nombre: i.nombre,
         precio: i.precio,
+        categoria: i.categoria,
         max: i.cantidad,
         cobrar: i.cantidad,
       }))
@@ -394,23 +383,18 @@ export default function Page() {
     if (!cuentaActiva || cobrando || cuentaActiva.pagada) return;
     const itemsACobrar = seleccionParcial
       .filter((l) => l.cobrar > 0)
-      .map((l) => ({ nombre: l.nombre, precio: l.precio, cantidad: l.cobrar }));
+      .map((l) => ({ nombre: l.nombre, precio: l.precio, categoria: l.categoria, cantidad: l.cobrar }));
     if (itemsACobrar.length === 0) return;
     setCobrando(true);
     await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", itemsACobrar);
     const restantes = cuentaActiva.items
       .map((i) => {
-        const l = seleccionParcial.find((s) => s.nombre === i.nombre && s.precio === i.precio);
+        const l = seleccionParcial.find((s) => claveItem(s.nombre, s.precio, s.categoria) === claveItem(i.nombre, i.precio, i.categoria));
         return l ? { ...i, cantidad: i.cantidad - l.cobrar } : i;
       })
       .filter((i) => i.cantidad > 0);
     if (restantes.length === 0) {
-      const tieneCocina = cuentaActiva.items.some((item) => {
-        const cat = PRODUCTOS.find((p) => p.nombre === item.nombre)?.categoria ?? item.categoria;
-        if (!cat || !CATS_COCINA.includes(cat)) return false;
-        const servida = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === item.nombre);
-        return item.cantidad - (servida?.cantidad_servida ?? 0) > 0;
-      });
+      const tieneCocina = tieneCocinaPendiente(cuentaActiva.items, servidas, cuentaActiva.id);
       if (tieneCocina) {
         await marcarPagada(cuentaActiva.id);
       } else {
@@ -422,9 +406,9 @@ export default function Page() {
       await actualizarCuenta(cuentaActiva.id, restantes);
       // Igual que en handleRestar/handleEliminarLinea: si el cobro parcial deja
       // algún item en 0 unidades, limpiar su registro de servido.
-      const nombresRestantes = new Set(restantes.map((i) => i.nombre));
-      for (const nombre of new Set(cuentaActiva.items.map((i) => i.nombre))) {
-        if (!nombresRestantes.has(nombre)) await limpiarItem(cuentaActiva.id, nombre);
+      for (const item of cuentaActiva.items) {
+        const sigueExistiendo = restantes.some((r) => claveItem(r.nombre, r.precio, r.categoria) === claveItem(item.nombre, item.precio, item.categoria));
+        if (!sigueExistiendo) await limpiarItem(cuentaActiva.id, item.nombre, item.precio, item.categoria ?? "");
       }
     }
     setModal(null);
@@ -448,17 +432,17 @@ export default function Page() {
 
   // ── Cobro rápido ──────────────────────────────────────────
 
-  function agregarItemRapido(nombre: string, precio: number) {
+  function agregarItemRapido(nombre: string, precio: number, categoria?: string) {
     setItemsRapidos((prev) => {
-      const existe = prev.find((i) => i.nombre === nombre && i.precio === precio);
-      if (existe) return prev.map((i) => i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad + 1 } : i);
-      return [...prev, { nombre, precio, cantidad: 1 }];
+      const existe = prev.find((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(nombre, precio, categoria));
+      if (existe) return prev.map((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(nombre, precio, categoria) ? { ...i, cantidad: i.cantidad + 1 } : i);
+      return [...prev, { nombre, precio, cantidad: 1, ...(categoria ? { categoria } : {}) }];
     });
   }
 
-  function restarItemRapido(nombre: string, precio: number) {
+  function restarItemRapido(nombre: string, precio: number, categoria?: string) {
     setItemsRapidos((prev) =>
-      prev.map((i) => i.nombre === nombre && i.precio === precio ? { ...i, cantidad: i.cantidad - 1 } : i)
+      prev.map((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(nombre, precio, categoria) ? { ...i, cantidad: i.cantidad - 1 } : i)
           .filter((i) => i.cantidad > 0)
     );
   }
@@ -467,10 +451,7 @@ export default function Page() {
     if (cobrando || itemsRapidos.length === 0) return;
     setCobrando(true);
     const nombre = nombreRapido.trim() || "Rápido";
-    const tieneCocina = itemsRapidos.some((item) => {
-      const cat = PRODUCTOS.find((p) => p.nombre === item.nombre)?.categoria ?? item.categoria;
-      return cat && CATS_COCINA.includes(cat);
-    });
+    const tieneCocina = itemsRapidos.some(esItemCocina);
     if (tieneCocina) {
       const now = new Date().toISOString();
       const itemsConTs = itemsRapidos.map((i) => ({ ...i, added_at: now }));
@@ -573,16 +554,16 @@ export default function Page() {
     const itemsMerged = [...cuentaActiva.items];
     for (const item of cuentaFuente.items) {
       // Solo transferir la cantidad que aún no ha salido de cocina
-      const servidaFuente = servidas.find((s) => s.cuenta_id === idCuentaJuntar && s.item_nombre === item.nombre);
+      const servidaFuente = servidas.find((s) => s.cuenta_id === idCuentaJuntar && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(item.nombre, item.precio, item.categoria));
       const pendienteFuente = item.cantidad - (servidaFuente?.cantidad_servida ?? 0);
       if (pendienteFuente <= 0) continue;
-      const existente = itemsMerged.find((i) => i.nombre === item.nombre && i.precio === item.precio);
+      const existente = itemsMerged.find((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(item.nombre, item.precio, item.categoria));
       if (existente) {
         // Si la línea que ya tenía la cuenta destino estaba totalmente
         // servida, las unidades que llegan de la fuente son un pedido nuevo:
         // resetear added_at para que no se cuelen al principio de cocina
         // (mismo caso que handleAgregar/handleSumar).
-        const servidaDestino = servidas.find((s) => s.cuenta_id === cuentaActiva.id && s.item_nombre === item.nombre);
+        const servidaDestino = servidas.find((s) => s.cuenta_id === cuentaActiva.id && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(item.nombre, item.precio, item.categoria));
         const destinoTodoServido = (servidaDestino?.cantidad_servida ?? 0) >= existente.cantidad;
         existente.cantidad += pendienteFuente;
         if (destinoTodoServido) existente.added_at = now;
@@ -854,13 +835,20 @@ export default function Page() {
                   <p className="text-gray-700 text-sm text-center py-10">Sin artículos todavía</p>
                 ) : (
                   cuentaActiva.items.map((item) => (
-                    <div key={`${item.nombre}-${item.precio}`} className="flex items-center gap-1.5 bg-white rounded-xl px-2 py-2.5">
-                      <span className="flex-1 text-sm font-medium leading-tight min-w-0 truncate">{item.nombre}</span>
-                      <button onClick={() => handleRestar(item.nombre, item.precio)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
+                    <div key={claveItem(item.nombre, item.precio, item.categoria)} className="flex items-center gap-1.5 bg-white rounded-xl px-2 py-2.5">
+                      <span className="flex-1 text-sm font-medium leading-tight min-w-0 truncate">
+                        {item.nombre}
+                        {item.categoria && CATS_COCINA.includes(item.categoria) && (
+                          <span className="ml-1.5 text-[10px] font-semibold text-gray-400">
+                            ({item.categoria === "Montaditos" ? "montadito" : "tapa"})
+                          </span>
+                        )}
+                      </span>
+                      <button onClick={() => handleRestar(item.nombre, item.precio, item.categoria)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
                       <span className="w-5 text-center text-sm tabular-nums shrink-0 font-semibold">{item.cantidad}</span>
-                      <button onClick={() => handleSumar(item.nombre, item.precio)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
+                      <button onClick={() => handleSumar(item.nombre, item.precio, item.categoria)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
                       <span className="w-12 text-right text-xs text-amber-400 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
-                      <button onClick={() => handleEliminarLinea(item.nombre, item.precio)} className="w-7 h-7 rounded-lg bg-gray-100 active:bg-red-900 text-gray-400 active:text-red-400 text-sm shrink-0 touch-manipulation">×</button>
+                      <button onClick={() => handleEliminarLinea(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-lg bg-gray-100 active:bg-red-900 text-gray-400 active:text-red-400 text-sm shrink-0 touch-manipulation">×</button>
                     </div>
                   ))
                 )}
@@ -998,9 +986,9 @@ export default function Page() {
             <div className="flex-1 overflow-y-auto scroll-touch p-3">
               <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
                 {productosRapidosFiltrados.map((p) => {
-                  const cant = itemsRapidos.find((i) => i.nombre === p.nombre && i.precio === p.precio)?.cantidad ?? 0;
+                  const cant = itemsRapidos.find((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(p.nombre, p.precio, p.categoria))?.cantidad ?? 0;
                   return (
-                    <button key={p.id} onClick={() => agregarItemRapido(p.nombre, p.precio)}
+                    <button key={p.id} onClick={() => agregarItemRapido(p.nombre, p.precio, p.categoria)}
                       className={`relative flex flex-col items-center justify-center p-3 rounded-2xl active:scale-95 transition-transform touch-manipulation ${
                         cant > 0 ? "bg-amber-900/60 border border-amber-700" : "bg-gray-100 active:bg-gray-200"
                       }`}
@@ -1023,11 +1011,11 @@ export default function Page() {
               {itemsRapidos.length > 0 && (
                 <div className="px-4 pt-3 flex flex-col gap-1.5 max-h-40 overflow-y-auto">
                   {itemsRapidos.map((item) => (
-                    <div key={`${item.nombre}-${item.precio}`} className="flex items-center gap-2">
+                    <div key={claveItem(item.nombre, item.precio, item.categoria)} className="flex items-center gap-2">
                       <span className="flex-1 text-sm truncate">{item.nombre}</span>
-                      <button onClick={() => restarItemRapido(item.nombre, item.precio)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
+                      <button onClick={() => restarItemRapido(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
                       <span className="w-5 text-center text-sm tabular-nums font-bold shrink-0">{item.cantidad}</span>
-                      <button onClick={() => agregarItemRapido(item.nombre, item.precio)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
+                      <button onClick={() => agregarItemRapido(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
                       <span className="w-14 text-right text-xs text-amber-400 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
                     </div>
                   ))}
@@ -1155,18 +1143,7 @@ export default function Page() {
             <div className="bg-gray-100 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">
               {libreImporte || "0"}€
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              {["1","2","3","4","5","6","7","8","9",".","0","⌫"].map((d, i) => (
-                <button key={i} onClick={() => {
-                  if (d === "⌫") { setLibreImporte((e) => e.slice(0, -1)); return; }
-                  if (d === "." && libreImporte.includes(".")) return;
-                  if ((libreImporte.split(".")[1]?.length ?? 0) >= 2) return;
-                  setLibreImporte((e) => e + d);
-                }} className="py-4 bg-gray-100 active:bg-gray-600 rounded-xl font-semibold text-xl touch-manipulation">
-                  {d}
-                </button>
-              ))}
-            </div>
+            <NumPad value={libreImporte} onChange={setLibreImporte} />
             <button onClick={handleAgregarLibre} disabled={!libreImporte || parseFloat(libreImporte) <= 0}
               className="w-full py-4 bg-amber-500 active:bg-amber-600 disabled:opacity-30 disabled:cursor-not-allowed rounded-2xl font-bold text-base touch-manipulation">
               Añadir al ticket
@@ -1230,9 +1207,16 @@ export default function Page() {
             </div>
             <div className="flex-1 overflow-y-auto scroll-touch px-4 flex flex-col gap-2 pb-2">
               {seleccionParcial.map((linea, idx) => (
-                <div key={linea.nombre} className="flex items-center gap-2 bg-gray-100 rounded-xl px-3 py-2.5">
+                <div key={claveItem(linea.nombre, linea.precio, linea.categoria)} className="flex items-center gap-2 bg-gray-100 rounded-xl px-3 py-2.5">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{linea.nombre}</p>
+                    <p className="text-sm font-medium truncate">
+                      {linea.nombre}
+                      {linea.categoria && CATS_COCINA.includes(linea.categoria) && (
+                        <span className="ml-1.5 text-[10px] font-semibold text-gray-400">
+                          ({linea.categoria === "Montaditos" ? "montadito" : "tapa"})
+                        </span>
+                      )}
+                    </p>
                     <p className="text-xs text-gray-400">{linea.precio.toFixed(2)}€/u · hay {linea.max}</p>
                   </div>
                   <button
@@ -1322,16 +1306,7 @@ export default function Page() {
             <h2 className="text-xl font-bold text-center">Calcular cambio</h2>
             <p className="text-center text-gray-400">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
             <div className="bg-gray-100 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">{efectivo || "0"}€</div>
-            <div className="grid grid-cols-3 gap-2">
-              {["1","2","3","4","5","6","7","8","9",".","0","⌫"].map((d, i) => (
-                <button key={i} onClick={() => {
-                  if (d === "⌫") { setEfectivo((e) => e.slice(0, -1)); return; }
-                  if (d === "." && efectivo.includes(".")) return;
-                  if ((efectivo.split(".")[1]?.length ?? 0) >= 2) return;
-                  setEfectivo((e) => e + d);
-                }} className="py-4 bg-gray-100 active:bg-gray-600 rounded-xl font-semibold text-xl touch-manipulation">{d}</button>
-              ))}
-            </div>
+            <NumPad value={efectivo} onChange={setEfectivo} />
             {parseFloat(efectivo || "0") > 0 && (
               <div className="bg-gray-100 rounded-2xl p-4 text-center">
                 <p className="text-gray-400 text-xs uppercase tracking-wider mb-1">Cambio</p>
@@ -1433,7 +1408,7 @@ export default function Page() {
                   };
                 }).filter((g) => g.cobros.length > 0);
 
-                return grupos.map((sesion, si) => {
+                return grupos.map((sesion) => {
                   const totalSesion = sesion.cobros.reduce((s, c) => s + Number(c.total), 0);
                   const etiqueta = sesion.turno === "mañana" ? "Turno de Mañana" : "Turno de Tarde";
                   const colorEtiqueta = sesion.turno === "mañana" ? "text-orange-400" : "text-indigo-400";
@@ -1635,7 +1610,7 @@ export default function Page() {
             ) : (
               <div className="flex flex-col gap-2">
                 {pedidosPendientes.map(({ cuentaId, cuentaNombre, item, pendiente, categoria, pagada }) => (
-                  <div key={`${cuentaId}-${item.nombre}`} className={`bg-white rounded-2xl border shadow-sm flex items-center gap-3 px-4 py-3 ${pagada ? "border-green-300" : "border-gray-200"}`}>
+                  <div key={`${cuentaId}-${claveItem(item.nombre, item.precio, categoria)}`} className={`bg-white rounded-2xl border shadow-sm flex items-center gap-3 px-4 py-3 ${pagada ? "border-green-300" : "border-gray-200"}`}>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="text-base font-bold text-gray-900">{cuentaNombre}</p>
@@ -1652,9 +1627,9 @@ export default function Page() {
                     </div>
                     <span className="text-xl font-bold text-gray-700 tabular-nums w-8 text-center shrink-0">×{pendiente}</span>
                     <div className="flex gap-2 shrink-0">
-                      <button type="button" onClick={() => servirUno(cuentaId, item.nombre)}
+                      <button type="button" onClick={() => servirUno(cuentaId, item.nombre, item.precio, categoria)}
                         className="w-10 h-10 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-700 touch-manipulation text-xl font-bold">−</button>
-                      <button type="button" onClick={() => servirTodo(cuentaId, item.nombre, item.cantidad)}
+                      <button type="button" onClick={() => servirTodo(cuentaId, item.nombre, item.precio, categoria, item.cantidad)}
                         className="w-10 h-10 flex items-center justify-center rounded-xl bg-green-500 active:bg-green-600 text-white touch-manipulation">
                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />

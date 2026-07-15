@@ -65,7 +65,7 @@ export function useSesion() {
     const poll = setInterval(cargarSesion, 10000);
 
     return () => { supabase.removeChannel(channel); clearInterval(poll); };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function iniciarTurno(turno: "mañana" | "tarde", cajaInicio: number = 0) {
     const id = `${turno}-${Date.now()}`;

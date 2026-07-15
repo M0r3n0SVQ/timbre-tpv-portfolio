@@ -6,6 +6,12 @@ import { supabase } from "@/lib/supabase";
 type ComandaServida = {
   cuenta_id: string;
   item_nombre: string;
+  // Varios platos comparten nombre Y precio entre categorías (p.ej. "Lomo
+  // orza salmorejo" vale 3.40€ tanto en Montaditos como en Tapas). Ni el
+  // nombre ni el precio por separado bastan para distinguirlos — hace
+  // falta también la categoría.
+  precio: number;
+  categoria: string;
   cantidad_servida: number;
 };
 
@@ -45,12 +51,12 @@ export function useComandas() {
     return () => { supabase.removeChannel(channel); clearInterval(poll); };
   }, []);
 
-  function guardar(cuentaId: string, itemNombre: string, cantidad: number) {
+  function guardar(cuentaId: string, itemNombre: string, precio: number, categoria: string, cantidad: number) {
     // Optimistic update, síncrono, a partir del ref (no del estado de React).
-    const exists = servidasRef.current.some((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre);
+    const exists = servidasRef.current.some((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre && s.precio === precio && s.categoria === categoria);
     const next = exists
-      ? servidasRef.current.map((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre ? { ...s, cantidad_servida: cantidad } : s)
-      : [...servidasRef.current, { cuenta_id: cuentaId, item_nombre: itemNombre, cantidad_servida: cantidad }];
+      ? servidasRef.current.map((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre && s.precio === precio && s.categoria === categoria ? { ...s, cantidad_servida: cantidad } : s)
+      : [...servidasRef.current, { cuenta_id: cuentaId, item_nombre: itemNombre, precio, categoria, cantidad_servida: cantidad }];
     servidasRef.current = next;
     setServidas(next);
 
@@ -59,10 +65,12 @@ export function useComandas() {
       await supabase.from("comandas_servidas")
         .delete()
         .eq("cuenta_id", cuentaId)
-        .eq("item_nombre", itemNombre);
+        .eq("item_nombre", itemNombre)
+        .eq("precio", precio)
+        .eq("categoria", categoria);
 
       await supabase.from("comandas_servidas")
-        .insert({ cuenta_id: cuentaId, item_nombre: itemNombre, cantidad_servida: cantidad });
+        .insert({ cuenta_id: cuentaId, item_nombre: itemNombre, precio, categoria, cantidad_servida: cantidad });
 
       // Confirmar estado real desde Supabase
       await fetchServidas();
@@ -70,13 +78,13 @@ export function useComandas() {
     return colaRef.current;
   }
 
-  async function servirUno(cuentaId: string, itemNombre: string) {
-    const actual = servidasRef.current.find((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre)?.cantidad_servida ?? 0;
-    await guardar(cuentaId, itemNombre, actual + 1);
+  async function servirUno(cuentaId: string, itemNombre: string, precio: number, categoria: string) {
+    const actual = servidasRef.current.find((s) => s.cuenta_id === cuentaId && s.item_nombre === itemNombre && s.precio === precio && s.categoria === categoria)?.cantidad_servida ?? 0;
+    await guardar(cuentaId, itemNombre, precio, categoria, actual + 1);
   }
 
-  async function servirTodo(cuentaId: string, itemNombre: string, cantidad: number) {
-    await guardar(cuentaId, itemNombre, cantidad);
+  async function servirTodo(cuentaId: string, itemNombre: string, precio: number, categoria: string, cantidad: number) {
+    await guardar(cuentaId, itemNombre, precio, categoria, cantidad);
   }
 
   async function limpiarCuenta(cuentaId: string) {
@@ -90,11 +98,11 @@ export function useComandas() {
   // sin borrar la cuenta entera). Evita que si se repide el mismo plato más
   // tarde, un cantidad_servida "huérfano" haga que el pendiente salga <= 0
   // y el pedido no aparezca en cocina.
-  async function limpiarItem(cuentaId: string, itemNombre: string) {
-    const next = servidasRef.current.filter((s) => !(s.cuenta_id === cuentaId && s.item_nombre === itemNombre));
+  async function limpiarItem(cuentaId: string, itemNombre: string, precio: number, categoria: string) {
+    const next = servidasRef.current.filter((s) => !(s.cuenta_id === cuentaId && s.item_nombre === itemNombre && s.precio === precio && s.categoria === categoria));
     servidasRef.current = next;
     setServidas(next);
-    await supabase.from("comandas_servidas").delete().eq("cuenta_id", cuentaId).eq("item_nombre", itemNombre);
+    await supabase.from("comandas_servidas").delete().eq("cuenta_id", cuentaId).eq("item_nombre", itemNombre).eq("precio", precio).eq("categoria", categoria);
   }
 
   return { servidas, servirUno, servirTodo, limpiarCuenta, limpiarItem };
