@@ -107,5 +107,16 @@ export function useCuentas() {
     return true;
   }
 
-  return { cuentas, loading, error, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, refetch: fetchCuentas };
+  // Suma `importe` al dinero ya cobrado "a cuenta" (cobro parcial por
+  // importe suelto, no ligado a artículos). Lo pendiente de la cuenta pasa
+  // a ser total - cobrado_parcial.
+  async function abonarCuenta(id: string, importe: number) {
+    const nuevo = (cuentas.find((c) => c.id === id)?.cobrado_parcial ?? 0) + importe;
+    setCuentas((prev) => prev.map((c) => c.id === id ? { ...c, cobrado_parcial: nuevo } : c));
+    const { error } = await supabase.from("cuentas").update({ cobrado_parcial: nuevo }).eq("id", id);
+    if (error) { reportError(error.message); fetchCuentas(); return false; }
+    return true;
+  }
+
+  return { cuentas, loading, error, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, abonarCuenta, refetch: fetchCuentas };
 }

@@ -16,7 +16,7 @@ type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre"
 type LineaParcial = { nombre: string; precio: number; categoria?: string; max: number; cobrar: number };
 
 export default function Page() {
-  const { cuentas, loading, error: errorCuentas, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada } = useCuentas();
+  const { cuentas, loading, error: errorCuentas, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, abonarCuenta } = useCuentas();
   const { cobros, error: errorCobros, cobrarCuenta, cerrarDia, restaurarCobros } = useCobros();
   const { sesion, loading: loadingSesion, error: errorSesion, iniciarTurno, cerrarTurno, actualizarCaja } = useSesion();
   const { servidas, servirUno, servirTodo, limpiarCuenta, limpiarItem } = useComandas();
@@ -48,6 +48,8 @@ export default function Page() {
   const [cajaEditada, setCajaEditada] = useState("");
 
   const [seleccionParcial, setSeleccionParcial] = useState<LineaParcial[]>([]);
+  const [modoParcial, setModoParcial] = useState<"articulos" | "importe">("articulos");
+  const [importeParcial, setImporteParcial] = useState("");
 
   const [modal, setModal] = useState<Modal>(null);
   const [efectivo, setEfectivo] = useState("");
@@ -202,6 +204,9 @@ export default function Page() {
 
   // ── Computed ───────────────────────────────────────────────
   const cuentaActiva = cuentas.find((c) => c.id === idActiva) ?? null;
+  // Lo que queda por cobrar de la cuenta activa, descontando lo ya pagado
+  // "a cuenta" por un importe suelto (cobro parcial por importe).
+  const pendienteCuenta = cuentaActiva ? Math.max(0, cuentaActiva.total - (cuentaActiva.cobrado_parcial ?? 0)) : 0;
   const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const productosRapidosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoriaRapida).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const totalDia = cobros.reduce((s, c) => s + Number(c.total), 0);
@@ -350,7 +355,12 @@ export default function Page() {
     // mientras estaba abierta aquí. No volver a cobrarla.
     if (!cuentaActiva || cobrando || cuentaActiva.pagada) return;
     setCobrando(true);
-    await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion");
+    // Si ya se cobró parte por importe suelto, "Cobrar todo" solo cobra lo
+    // que queda — el desglose de artículos del recibo sigue siendo el real,
+    // pero el total cobrado ahora es el pendiente, no el total de la cuenta.
+    if (pendienteCuenta > 0) {
+      await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", undefined, pendienteCuenta);
+    }
     const tieneCocina = tieneCocinaPendiente(cuentaActiva.items, servidas, cuentaActiva.id);
     if (tieneCocina) {
       await marcarPagada(cuentaActiva.id);
@@ -373,10 +383,40 @@ export default function Page() {
         precio: i.precio,
         categoria: i.categoria,
         max: i.cantidad,
-        cobrar: i.cantidad,
+        cobrar: 0,
       }))
     );
+    setModoParcial("articulos");
+    setImporteParcial("");
     setModal("parcial");
+  }
+
+  // Cobro parcial "por importe": para cuando el cliente paga una cantidad
+  // suelta ("aquí tienes 50€, el resto luego") que no corresponde a ninguna
+  // combinación exacta de artículos. No toca los artículos del ticket —
+  // cocina los sigue viendo igual — solo lleva la cuenta de cuánto se ha
+  // pagado ya (cobrado_parcial). Si el importe cubre todo lo pendiente,
+  // cierra la cuenta igual que "Cobrar todo".
+  async function handleCobrarPorImporte() {
+    if (!cuentaActiva || cobrando || cuentaActiva.pagada) return;
+    const importe = parseFloat(importeParcial);
+    if (!importe || importe <= 0 || importe > pendienteCuenta + 0.001) return;
+    setCobrando(true);
+    await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", [{ nombre: "Pago a cuenta", precio: importe, cantidad: 1 }]);
+    await abonarCuenta(cuentaActiva.id, importe);
+    if (pendienteCuenta - importe <= 0.001) {
+      const tieneCocina = tieneCocinaPendiente(cuentaActiva.items, servidas, cuentaActiva.id);
+      if (tieneCocina) {
+        await marcarPagada(cuentaActiva.id);
+      } else {
+        await eliminarCuenta(cuentaActiva.id);
+        await limpiarCuenta(cuentaActiva.id);
+      }
+      setIdActiva(cuentas.find((c) => c.id !== cuentaActiva.id && !c.pagada)?.id ?? null);
+    }
+    setModal(null);
+    setImporteParcial("");
+    setCobrando(false);
   }
 
   async function handleCobrarParcial() {
@@ -511,6 +551,7 @@ export default function Page() {
       if (c.pagada || nombresAbiertas.has(c.nombre)) continue;
       const nueva = await crearCuenta(c.nombre);
       if (nueva && c.items?.length) await actualizarCuenta(nueva.id, c.items);
+      if (nueva && c.cobrado_parcial) await abonarCuenta(nueva.id, c.cobrado_parcial);
     }
     // restaurarCobros hace upsert por id, así que aunque se repita no duplica.
     if (backup.cobros?.length) await restaurarCobros(backup.cobros);
@@ -861,10 +902,16 @@ export default function Page() {
                   <span className="text-gray-400 text-sm uppercase tracking-wider">Total</span>
                   <span className="text-3xl font-bold text-amber-400 tabular-nums">{cuentaActiva.total.toFixed(2)}€</span>
                 </div>
+                {(cuentaActiva.cobrado_parcial ?? 0) > 0 && (
+                  <div className="flex justify-between items-center px-1 text-xs">
+                    <span className="text-green-600 font-medium">Pagado {cuentaActiva.cobrado_parcial!.toFixed(2)}€</span>
+                    <span className="text-amber-500 font-semibold">Pendiente {pendienteCuenta.toFixed(2)}€</span>
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <button onClick={() => setModal("cobrar")} disabled={sinItems}
                     className="flex-1 py-4 bg-green-600 active:bg-green-700 disabled:opacity-25 disabled:cursor-not-allowed rounded-2xl font-bold text-white text-base touch-manipulation">
-                    Cobrar todo
+                    {(cuentaActiva.cobrado_parcial ?? 0) > 0 ? `Cobrar resto (${pendienteCuenta.toFixed(2)}€)` : "Cobrar todo"}
                   </button>
                   <button onClick={abrirCobroParcial} disabled={sinItems}
                     className="py-4 px-4 bg-green-900 active:bg-green-800 disabled:opacity-25 disabled:cursor-not-allowed rounded-2xl font-semibold text-sm text-green-300 touch-manipulation">
@@ -1203,55 +1250,99 @@ export default function Page() {
             <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mt-3 sm:hidden" />
             <div className="px-5 pt-4 pb-3 shrink-0">
               <h2 className="text-xl font-bold">Cobro parcial</h2>
-              <p className="text-gray-400 text-sm mt-0.5">{cuentaActiva.nombre}</p>
+              <p className="text-gray-400 text-sm mt-0.5">{cuentaActiva.nombre} · pendiente {pendienteCuenta.toFixed(2)}€</p>
             </div>
-            <div className="flex-1 overflow-y-auto scroll-touch px-4 flex flex-col gap-2 pb-2">
-              {seleccionParcial.map((linea, idx) => (
-                <div key={claveItem(linea.nombre, linea.precio, linea.categoria)} className="flex items-center gap-2 bg-gray-100 rounded-xl px-3 py-2.5">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">
-                      {linea.nombre}
-                      {linea.categoria && CATS_COCINA.includes(linea.categoria) && (
-                        <span className="ml-1.5 text-[10px] font-semibold text-gray-400">
-                          ({linea.categoria === "Montaditos" ? "montadito" : "tapa"})
-                        </span>
-                      )}
-                    </p>
-                    <p className="text-xs text-gray-400">{linea.precio.toFixed(2)}€/u · hay {linea.max}</p>
-                  </div>
-                  <button
-                    onClick={() => setSeleccionParcial((prev) => prev.map((l, i) => i === idx ? { ...l, cobrar: Math.max(0, l.cobrar - 1) } : l))}
-                    className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation"
-                  >−</button>
-                  <span className={`w-6 text-center text-sm tabular-nums font-bold shrink-0 ${linea.cobrar === 0 ? "text-gray-500" : "text-gray-900"}`}>
-                    {linea.cobrar}
-                  </span>
-                  <button
-                    onClick={() => setSeleccionParcial((prev) => prev.map((l, i) => i === idx ? { ...l, cobrar: Math.min(l.max, l.cobrar + 1) } : l))}
-                    className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation"
-                  >+</button>
-                  <span className={`w-14 text-right text-sm tabular-nums shrink-0 font-medium ${linea.cobrar === 0 ? "text-gray-500" : "text-amber-400"}`}>
-                    {(linea.precio * linea.cobrar).toFixed(2)}€
-                  </span>
-                </div>
+            {/* Toggle Por artículos / Por importe */}
+            <div className="shrink-0 flex gap-1.5 px-4 pb-3">
+              {(["articulos", "importe"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setModoParcial(m)}
+                  className={`flex-1 py-2 rounded-xl text-sm font-semibold touch-manipulation ${
+                    modoParcial === m ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-500 active:bg-gray-200"
+                  }`}
+                >
+                  {m === "articulos" ? "Por artículos" : "Por importe"}
+                </button>
               ))}
             </div>
-            <div className="shrink-0 border-t border-gray-200 px-5 py-3 flex justify-between items-baseline">
-              <span className="text-gray-400 text-sm uppercase tracking-wider">A cobrar</span>
-              <span className="text-2xl font-bold text-amber-400 tabular-nums">
-                {seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€
-              </span>
-            </div>
-            <div className="shrink-0 px-4 pb-4 flex flex-col gap-2">
-              <button
-                onClick={handleCobrarParcial}
-                disabled={cobrando || seleccionParcial.every((l) => l.cobrar === 0)}
-                className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-30 rounded-2xl font-bold text-white text-base touch-manipulation"
-              >
-                {cobrando ? "Guardando…" : `Cobrar ${seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€`}
-              </button>
-              <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
-            </div>
+
+            {modoParcial === "articulos" ? (
+              <>
+                <div className="flex-1 overflow-y-auto scroll-touch px-4 flex flex-col gap-2 pb-2">
+                  {seleccionParcial.map((linea, idx) => (
+                    <div key={claveItem(linea.nombre, linea.precio, linea.categoria)} className="flex items-center gap-2 bg-gray-100 rounded-xl px-3 py-2.5">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium truncate">
+                          {linea.nombre}
+                          {linea.categoria && CATS_COCINA.includes(linea.categoria) && (
+                            <span className="ml-1.5 text-[10px] font-semibold text-gray-400">
+                              ({linea.categoria === "Montaditos" ? "montadito" : "tapa"})
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-xs text-gray-400">{linea.precio.toFixed(2)}€/u · hay {linea.max}</p>
+                      </div>
+                      <button
+                        onClick={() => setSeleccionParcial((prev) => prev.map((l, i) => i === idx ? { ...l, cobrar: Math.max(0, l.cobrar - 1) } : l))}
+                        className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation"
+                      >−</button>
+                      <span className={`w-6 text-center text-sm tabular-nums font-bold shrink-0 ${linea.cobrar === 0 ? "text-gray-500" : "text-gray-900"}`}>
+                        {linea.cobrar}
+                      </span>
+                      <button
+                        onClick={() => setSeleccionParcial((prev) => prev.map((l, i) => i === idx ? { ...l, cobrar: Math.min(l.max, l.cobrar + 1) } : l))}
+                        className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation"
+                      >+</button>
+                      <span className={`w-14 text-right text-sm tabular-nums shrink-0 font-medium ${linea.cobrar === 0 ? "text-gray-500" : "text-amber-400"}`}>
+                        {(linea.precio * linea.cobrar).toFixed(2)}€
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="shrink-0 border-t border-gray-200 px-5 py-3 flex justify-between items-baseline">
+                  <span className="text-gray-400 text-sm uppercase tracking-wider">A cobrar</span>
+                  <span className="text-2xl font-bold text-amber-400 tabular-nums">
+                    {seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€
+                  </span>
+                </div>
+                <div className="shrink-0 px-4 pb-4 flex flex-col gap-2">
+                  <button
+                    onClick={handleCobrarParcial}
+                    disabled={cobrando || seleccionParcial.every((l) => l.cobrar === 0)}
+                    className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-30 rounded-2xl font-bold text-white text-base touch-manipulation"
+                  >
+                    {cobrando ? "Guardando…" : `Cobrar ${seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€`}
+                  </button>
+                  <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex-1 overflow-y-auto scroll-touch px-4 pb-2 flex flex-col gap-3">
+                  <p className="text-xs text-gray-400 text-center">
+                    No mueve artículos del ticket — cocina sigue viendo lo mismo. Solo lleva la cuenta de cuánto se ha pagado ya.
+                  </p>
+                  <div className="bg-gray-100 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">
+                    {importeParcial || "0"}€
+                  </div>
+                  <NumPad value={importeParcial} onChange={setImporteParcial} />
+                  {parseFloat(importeParcial || "0") > pendienteCuenta + 0.001 && (
+                    <p className="text-center text-xs text-red-400">No puede superar lo pendiente ({pendienteCuenta.toFixed(2)}€)</p>
+                  )}
+                </div>
+                <div className="shrink-0 px-4 pb-4 flex flex-col gap-2">
+                  <button
+                    onClick={handleCobrarPorImporte}
+                    disabled={cobrando || !importeParcial || parseFloat(importeParcial) <= 0 || parseFloat(importeParcial) > pendienteCuenta + 0.001}
+                    className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-30 rounded-2xl font-bold text-white text-base touch-manipulation"
+                  >
+                    {cobrando ? "Guardando…" : `Cobrar ${(parseFloat(importeParcial) || 0).toFixed(2)}€ a cuenta`}
+                  </button>
+                  <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -1264,7 +1355,12 @@ export default function Page() {
             <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto sm:hidden mb-1" />
             <h2 className="text-xl font-bold text-center">Cobrar cuenta</h2>
             <p className="text-center text-gray-400 font-medium">{cuentaActiva.nombre}</p>
-            <p className="text-center text-5xl font-bold text-amber-400 tabular-nums py-2">{cuentaActiva.total.toFixed(2)}€</p>
+            {(cuentaActiva.cobrado_parcial ?? 0) > 0 && (
+              <p className="text-center text-xs text-gray-400">
+                Total {cuentaActiva.total.toFixed(2)}€ · ya pagado {cuentaActiva.cobrado_parcial!.toFixed(2)}€
+              </p>
+            )}
+            <p className="text-center text-5xl font-bold text-amber-400 tabular-nums py-2">{pendienteCuenta.toFixed(2)}€</p>
             <button onClick={handleCobrar} disabled={cobrando}
               className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-50 rounded-2xl font-bold text-white text-lg touch-manipulation">
               {cobrando ? "Guardando…" : "Confirmar cobro"}

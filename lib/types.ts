@@ -13,6 +13,10 @@ export type Cuenta = {
   total: number;
   created_at: string;
   pagada?: boolean;
+  // Dinero ya cobrado "a cuenta" por un importe suelto (no ligado a
+  // artículos concretos, p.ej. "aquí tienes 50€, el resto luego"). Lo que
+  // queda por cobrar es total - cobrado_parcial.
+  cobrado_parcial?: number;
 };
 
 export type Cobro = {

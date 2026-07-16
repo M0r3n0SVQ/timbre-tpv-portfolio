@@ -48,9 +48,12 @@ export function useCobros() {
     setLoading(false);
   }
 
-  async function cobrarCuenta(cuenta: Cuenta, sesionId: string, itemsACobrar?: Item[]) {
+  async function cobrarCuenta(cuenta: Cuenta, sesionId: string, itemsACobrar?: Item[], totalOverride?: number) {
     const items = itemsACobrar ?? cuenta.items;
-    const total = items.reduce((s, i) => s + i.precio * i.cantidad, 0);
+    // totalOverride: para cobrar solo lo pendiente cuando ya se ha cobrado
+    // parte de la cuenta por un importe suelto (cobrado_parcial), sin perder
+    // el desglose de artículos real en el recibo.
+    const total = totalOverride ?? items.reduce((s, i) => s + i.precio * i.cantidad, 0);
     const { data, error } = await supabase
       .from("cobros")
       .insert({

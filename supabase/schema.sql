@@ -1,13 +1,17 @@
 -- Cuentas abiertas (en curso)
 CREATE TABLE cuentas (
-  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  nombre     TEXT NOT NULL,
-  items      JSONB NOT NULL DEFAULT '[]',
-  total      NUMERIC(8,2) NOT NULL DEFAULT 0,
+  id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  nombre           TEXT NOT NULL,
+  items            JSONB NOT NULL DEFAULT '[]',
+  total            NUMERIC(8,2) NOT NULL DEFAULT 0,
   -- true = ya se cobró pero sigue pendiente de cocina; se elimina sola en
   -- cuanto no le queda nada pendiente de servir (ver page.tsx).
-  pagada     BOOLEAN NOT NULL DEFAULT false,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  pagada           BOOLEAN NOT NULL DEFAULT false,
+  -- Dinero ya cobrado "a cuenta" por un importe suelto, no ligado a
+  -- artículos concretos (cobro parcial "por importe"). Lo pendiente de
+  -- cobrar es total - cobrado_parcial.
+  cobrado_parcial  NUMERIC(8,2) NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 ALTER TABLE cuentas DISABLE ROW LEVEL SECURITY;
