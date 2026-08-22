@@ -10,14 +10,14 @@ import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import { supabase } from "@/lib/supabase";
 import { claveItem } from "@/lib/itemIdentity";
 import { CATS_COCINA, categoriaCocina, esItemCocina, tieneCocinaPendiente, pendienteDe } from "@/lib/cocina";
-import type { Cobro, Cuenta, Item } from "@/lib/types";
+import type { Cobro, Cuenta, Item, MetodoPago } from "@/lib/types";
 
 type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
 type LineaParcial = { nombre: string; precio: number; categoria?: string; max: number; cobrar: number };
 
 export default function Page() {
   const { cuentas, loading, error: errorCuentas, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, abonarCuenta } = useCuentas();
-  const { cobros, error: errorCobros, cobrarCuenta, cerrarDia, restaurarCobros } = useCobros();
+  const { cobros, error: errorCobros, cobrarCuenta, actualizarMetodoPago, cerrarDia, restaurarCobros } = useCobros();
   const { sesion, loading: loadingSesion, error: errorSesion, iniciarTurno, cerrarTurno, actualizarCaja } = useSesion();
   const { servidas, servirUno, servirTodo, limpiarCuenta, limpiarItem } = useComandas();
 
@@ -59,6 +59,7 @@ export default function Page() {
   const [confirmandoRestaurar, setConfirmandoRestaurar] = useState(false);
   const [restaurando, setRestaurando] = useState(false);
   const [cobrando, setCobrando] = useState(false);
+  const [metodoPago, setMetodoPago] = useState<MetodoPago>("efectivo");
 
   // Aviso de errores de red/Supabase en acciones del usuario (cobrar, guardar…).
   // Sin esto, si Supabase falla en silencio el camarero no se entera de que
@@ -210,14 +211,16 @@ export default function Page() {
   const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const productosRapidosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoriaRapida).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const totalDia = cobros.reduce((s, c) => s + Number(c.total), 0);
+  const totalEfectivoDia = cobros.filter((c) => c.metodo_pago !== "tarjeta").reduce((s, c) => s + Number(c.total), 0);
+  const totalTarjetaDia = cobros.filter((c) => c.metodo_pago === "tarjeta").reduce((s, c) => s + Number(c.total), 0);
   const cambio = parseFloat(efectivo || "0") - (cuentaActiva?.total ?? 0);
   const sinItems = (cuentaActiva?.items.length ?? 0) === 0;
   const totalRapido = itemsRapidos.reduce((s, i) => s + i.precio * i.cantidad, 0);
   const itemsCompraPendientes = listaCompra.filter((i) => !i.hecho).length;
-  const cuentasParaJuntar = cuentas.filter((c) => c.id !== idActiva && !c.pagada);
-  const cuentasAbiertas = cuentas.filter((c) => !c.pagada);
+  const cuentasParaJuntar = cuentas.filter((c) => c.id !== idActiva && !c.pagada).sort((a, b) => a.nombre.localeCompare(b.nombre, "es", { numeric: true }));
+  const cuentasAbiertas = cuentas.filter((c) => !c.pagada).sort((a, b) => a.nombre.localeCompare(b.nombre, "es", { numeric: true }));
   const ticketData = cobroParaTicket
-    ? { nombre: cobroParaTicket.nombre_cuenta, items: cobroParaTicket.items, total: Number(cobroParaTicket.total), fecha: new Date(cobroParaTicket.created_at) }
+    ? { nombre: cobroParaTicket.nombre_cuenta, items: cobroParaTicket.items, total: Number(cobroParaTicket.total), fecha: new Date(cobroParaTicket.created_at), metodoPago: cobroParaTicket.metodo_pago }
     : cuentaActiva
     ? { nombre: cuentaActiva.nombre, items: cuentaActiva.items, total: cuentaActiva.total, fecha: new Date() }
     : null;
@@ -359,7 +362,7 @@ export default function Page() {
     // que queda — el desglose de artículos del recibo sigue siendo el real,
     // pero el total cobrado ahora es el pendiente, no el total de la cuenta.
     if (pendienteCuenta > 0) {
-      await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", undefined, pendienteCuenta);
+      await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", undefined, pendienteCuenta, metodoPago);
     }
     const tieneCocina = tieneCocinaPendiente(cuentaActiva.items, servidas, cuentaActiva.id);
     if (tieneCocina) {
@@ -372,6 +375,7 @@ export default function Page() {
     setIdActiva(siguiente?.id ?? null);
     setModal(null);
     setEfectivo("");
+    setMetodoPago("efectivo");
     setCobrando(false);
   }
 
@@ -388,6 +392,7 @@ export default function Page() {
     );
     setModoParcial("articulos");
     setImporteParcial("");
+    setMetodoPago("efectivo");
     setModal("parcial");
   }
 
@@ -402,7 +407,7 @@ export default function Page() {
     const importe = parseFloat(importeParcial);
     if (!importe || importe <= 0 || importe > pendienteCuenta + 0.001) return;
     setCobrando(true);
-    await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", [{ nombre: "Pago a cuenta", precio: importe, cantidad: 1 }]);
+    await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", [{ nombre: "Pago a cuenta", precio: importe, cantidad: 1 }], undefined, metodoPago);
     await abonarCuenta(cuentaActiva.id, importe);
     if (pendienteCuenta - importe <= 0.001) {
       const tieneCocina = tieneCocinaPendiente(cuentaActiva.items, servidas, cuentaActiva.id);
@@ -416,6 +421,7 @@ export default function Page() {
     }
     setModal(null);
     setImporteParcial("");
+    setMetodoPago("efectivo");
     setCobrando(false);
   }
 
@@ -426,7 +432,7 @@ export default function Page() {
       .map((l) => ({ nombre: l.nombre, precio: l.precio, categoria: l.categoria, cantidad: l.cobrar }));
     if (itemsACobrar.length === 0) return;
     setCobrando(true);
-    await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", itemsACobrar);
+    await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", itemsACobrar, undefined, metodoPago);
     const restantes = cuentaActiva.items
       .map((i) => {
         const l = seleccionParcial.find((s) => claveItem(s.nombre, s.precio, s.categoria) === claveItem(i.nombre, i.precio, i.categoria));
@@ -452,6 +458,7 @@ export default function Page() {
       }
     }
     setModal(null);
+    setMetodoPago("efectivo");
     setCobrando(false);
   }
 
@@ -498,7 +505,7 @@ export default function Page() {
       const nueva = await crearCuenta(nombre);
       if (nueva) {
         await actualizarCuenta(nueva.id, itemsConTs);
-        await cobrarCuenta({ ...nueva, items: itemsConTs, total: totalRapido }, sesion?.id ?? "sin-sesion");
+        await cobrarCuenta({ ...nueva, items: itemsConTs, total: totalRapido }, sesion?.id ?? "sin-sesion", undefined, undefined, metodoPago);
         await marcarPagada(nueva.id);
       }
     } else {
@@ -509,12 +516,22 @@ export default function Page() {
         total: totalRapido,
         created_at: new Date().toISOString(),
       };
-      await cobrarCuenta(cuentaFake, sesion?.id ?? "sin-sesion");
+      await cobrarCuenta(cuentaFake, sesion?.id ?? "sin-sesion", undefined, undefined, metodoPago);
     }
     setItemsRapidos([]);
     setNombreRapido("");
     setModal(null);
+    setMetodoPago("efectivo");
     setCobrando(false);
+  }
+
+  // Corregir el método de pago de un cobro ya guardado (p.ej. el camarero
+  // se equivocó al marcarlo). Se edita desde el ticket, viendo el cobro
+  // desde el Historial.
+  async function handleCambiarMetodoPagoCobro(m: MetodoPago) {
+    if (!cobroParaTicket || cobroParaTicket.metodo_pago === m) return;
+    const ok = await actualizarMetodoPago(cobroParaTicket.id, m);
+    if (ok) setCobroParaTicket((prev) => (prev ? { ...prev, metodo_pago: m } : prev));
   }
 
   // ── Backup / Exportar / Restaurar ────────────────────────
@@ -781,7 +798,7 @@ export default function Page() {
 
           {/* Cobro rápido */}
           <button
-            onClick={() => { setCategoriaRapida(CATEGORIAS[0]); setItemsRapidos([]); setNombreRapido(""); setModal("cobro-rapido"); }}
+            onClick={() => { setCategoriaRapida(CATEGORIAS[0]); setItemsRapidos([]); setNombreRapido(""); setMetodoPago("efectivo"); setModal("cobro-rapido"); }}
             className="shrink-0 flex items-center gap-1.5 px-3 py-2.5 rounded-xl bg-amber-600 active:bg-amber-700 text-gray-900 text-xs font-bold touch-manipulation min-h-[44px]"
             title="Cobro rápido"
           >
@@ -909,7 +926,7 @@ export default function Page() {
                   </div>
                 )}
                 <div className="flex gap-2">
-                  <button onClick={() => setModal("cobrar")} disabled={sinItems}
+                  <button onClick={() => { setMetodoPago("efectivo"); setModal("cobrar"); }} disabled={sinItems}
                     className="flex-1 py-4 bg-green-600 active:bg-green-700 disabled:opacity-25 disabled:cursor-not-allowed rounded-2xl font-bold text-white text-base touch-manipulation">
                     {(cuentaActiva.cobrado_parcial ?? 0) > 0 ? `Cobrar resto (${pendienteCuenta.toFixed(2)}€)` : "Cobrar todo"}
                   </button>
@@ -1076,6 +1093,19 @@ export default function Page() {
                   <span className="text-gray-400 text-sm uppercase tracking-wider">Total</span>
                   <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalRapido.toFixed(2)}€</span>
                 </div>
+                <div className="flex gap-1.5">
+                  {(["efectivo", "tarjeta"] as const).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setMetodoPago(m)}
+                      className={`flex-1 py-2 rounded-xl text-sm font-semibold touch-manipulation ${
+                        metodoPago === m ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-500 active:bg-gray-200"
+                      }`}
+                    >
+                      {m === "efectivo" ? "💶 Efectivo" : "💳 Tarjeta"}
+                    </button>
+                  ))}
+                </div>
                 <button
                   onClick={handleCobrarRapido}
                   disabled={cobrando || itemsRapidos.length === 0}
@@ -1235,6 +1265,21 @@ export default function Page() {
               <span className="font-bold text-base tracking-wider uppercase">Total</span>
               <span className="font-bold text-2xl tabular-nums">{ticketData.total.toFixed(2)}€</span>
             </div>
+            {cobroParaTicket && (
+              <div className="flex justify-center gap-1.5 px-4 pb-3">
+                {(["efectivo", "tarjeta"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => handleCambiarMetodoPagoCobro(m)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold touch-manipulation ${
+                      cobroParaTicket.metodo_pago === m ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-500 active:bg-gray-200"
+                    }`}
+                  >
+                    {m === "efectivo" ? "💶 Efectivo" : "💳 Tarjeta"}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="text-center py-3 border-t border-dashed border-gray-300">
               <p className="text-xs text-gray-400">¡Gracias por tu visita!</p>
             </div>
@@ -1263,6 +1308,20 @@ export default function Page() {
                   }`}
                 >
                   {m === "articulos" ? "Por artículos" : "Por importe"}
+                </button>
+              ))}
+            </div>
+            {/* Toggle Efectivo / Tarjeta */}
+            <div className="shrink-0 flex gap-1.5 px-4 pb-3">
+              {(["efectivo", "tarjeta"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMetodoPago(m)}
+                  className={`flex-1 py-2 rounded-xl text-sm font-semibold touch-manipulation ${
+                    metodoPago === m ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-500 active:bg-gray-200"
+                  }`}
+                >
+                  {m === "efectivo" ? "💶 Efectivo" : "💳 Tarjeta"}
                 </button>
               ))}
             </div>
@@ -1361,6 +1420,19 @@ export default function Page() {
               </p>
             )}
             <p className="text-center text-5xl font-bold text-amber-400 tabular-nums py-2">{pendienteCuenta.toFixed(2)}€</p>
+            <div className="flex gap-1.5">
+              {(["efectivo", "tarjeta"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMetodoPago(m)}
+                  className={`flex-1 py-2.5 rounded-xl text-sm font-semibold touch-manipulation ${
+                    metodoPago === m ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-500 active:bg-gray-200"
+                  }`}
+                >
+                  {m === "efectivo" ? "💶 Efectivo" : "💳 Tarjeta"}
+                </button>
+              ))}
+            </div>
             <button onClick={handleCobrar} disabled={cobrando}
               className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-50 rounded-2xl font-bold text-white text-lg touch-manipulation">
               {cobrando ? "Guardando…" : "Confirmar cobro"}
@@ -1506,6 +1578,8 @@ export default function Page() {
 
                 return grupos.map((sesion) => {
                   const totalSesion = sesion.cobros.reduce((s, c) => s + Number(c.total), 0);
+                  const efectivoSesion = sesion.cobros.filter((c) => c.metodo_pago !== "tarjeta").reduce((s, c) => s + Number(c.total), 0);
+                  const tarjetaSesion = sesion.cobros.filter((c) => c.metodo_pago === "tarjeta").reduce((s, c) => s + Number(c.total), 0);
                   const etiqueta = sesion.turno === "mañana" ? "Turno de Mañana" : "Turno de Tarde";
                   const colorEtiqueta = sesion.turno === "mañana" ? "text-orange-400" : "text-indigo-400";
                   const timestamp = sesion.startTime || null;
@@ -1536,13 +1610,16 @@ export default function Page() {
                               </p>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-xs" title={cobro.metodo_pago === "tarjeta" ? "Tarjeta" : "Efectivo"}>
+                                {cobro.metodo_pago === "tarjeta" ? "💳" : "💶"}
+                              </span>
                               <span className="text-amber-400 font-bold tabular-nums">{Number(cobro.total).toFixed(2)}€</span>
                               <span className="text-gray-400 text-xs">🧾</span>
                             </div>
                           </button>
                         ))}
                         <div className="flex justify-between px-1 py-1 text-xs text-gray-400">
-                          <span>{sesion.cobros.length} cobro{sesion.cobros.length !== 1 ? "s" : ""}</span>
+                          <span>{sesion.cobros.length} cobro{sesion.cobros.length !== 1 ? "s" : ""} · 💶{efectivoSesion.toFixed(2)}€ · 💳{tarjetaSesion.toFixed(2)}€</span>
                           <span className="font-semibold text-gray-400">{totalSesion.toFixed(2)}€</span>
                         </div>
                       </div>
@@ -1595,6 +1672,7 @@ export default function Page() {
               <div className="text-right shrink-0">
                 <p className="text-xs text-gray-400">{cobros.length} cobro{cobros.length !== 1 ? "s" : ""}</p>
                 <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalDia.toFixed(2)}€</span>
+                <p className="text-[10px] text-gray-400 tabular-nums mt-0.5">💶 {totalEfectivoDia.toFixed(2)}€ · 💳 {totalTarjetaDia.toFixed(2)}€</p>
               </div>
             </div>
             {/* Backup info */}

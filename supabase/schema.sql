@@ -23,6 +23,7 @@ CREATE TABLE cobros (
   items         JSONB NOT NULL DEFAULT '[]',
   total         NUMERIC(8,2) NOT NULL DEFAULT 0,
   sesion_id     TEXT,
+  metodo_pago   TEXT NOT NULL DEFAULT 'efectivo' CHECK (metodo_pago IN ('efectivo', 'tarjeta')),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

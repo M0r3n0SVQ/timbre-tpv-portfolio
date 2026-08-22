@@ -19,6 +19,8 @@ export type Cuenta = {
   cobrado_parcial?: number;
 };
 
+export type MetodoPago = "efectivo" | "tarjeta";
+
 export type Cobro = {
   id: string;
   nombre_cuenta: string;
@@ -26,6 +28,7 @@ export type Cobro = {
   total: number;
   created_at: string;
   sesion_id: string | null;
+  metodo_pago: MetodoPago;
 };
 
 export type Sesion = {

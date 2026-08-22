@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import type { Cobro, Cuenta, Item } from "@/lib/types";
+import type { Cobro, Cuenta, Item, MetodoPago } from "@/lib/types";
 import type { HookError } from "@/hooks/useCuentas";
 
 export function useCobros() {
@@ -48,7 +48,7 @@ export function useCobros() {
     setLoading(false);
   }
 
-  async function cobrarCuenta(cuenta: Cuenta, sesionId: string, itemsACobrar?: Item[], totalOverride?: number) {
+  async function cobrarCuenta(cuenta: Cuenta, sesionId: string, itemsACobrar?: Item[], totalOverride?: number, metodoPago: MetodoPago = "efectivo") {
     const items = itemsACobrar ?? cuenta.items;
     // totalOverride: para cobrar solo lo pendiente cuando ya se ha cobrado
     // parte de la cuenta por un importe suelto (cobrado_parcial), sin perder
@@ -61,12 +61,20 @@ export function useCobros() {
         items,
         total,
         sesion_id: sesionId,
+        metodo_pago: metodoPago,
       })
       .select()
       .single();
     if (error) { reportError(`No se pudo guardar el cobro de "${cuenta.nombre}": ${error.message}`); return null; }
     setCobros((prev) => [...prev, data as Cobro]);
     return data as Cobro;
+  }
+
+  async function actualizarMetodoPago(id: string, metodoPago: MetodoPago) {
+    const { error } = await supabase.from("cobros").update({ metodo_pago: metodoPago }).eq("id", id);
+    if (error) { reportError(`No se pudo cambiar el método de pago: ${error.message}`); return false; }
+    setCobros((prev) => prev.map((c) => (c.id === id ? { ...c, metodo_pago: metodoPago } : c)));
+    return true;
   }
 
   async function cerrarDia() {
@@ -93,6 +101,7 @@ export function useCobros() {
         total: c.total,
         sesion_id: c.sesion_id,
         created_at: c.created_at,
+        metodo_pago: c.metodo_pago ?? "efectivo",
       }, { onConflict: "id" });
       if (error) fallos++;
     }
@@ -100,5 +109,5 @@ export function useCobros() {
     await fetchCobros();
   }
 
-  return { cobros, loading, error, cobrarCuenta, cerrarDia, restaurarCobros, refetch: fetchCobros };
+  return { cobros, loading, error, cobrarCuenta, actualizarMetodoPago, cerrarDia, restaurarCobros, refetch: fetchCobros };
 }

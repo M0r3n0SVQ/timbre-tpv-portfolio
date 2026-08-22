@@ -60,7 +60,6 @@ export const PRODUCTOS: Producto[] = [
   { id: 'p47', nombre: 'Chicharrón de Cádiz',    precio: 3.00, categoria: 'Tapas' },
   { id: 'p48', nombre: 'Morcilla hígado',        precio: 1.50, categoria: 'Tapas' },
   { id: 'p49', nombre: 'Provolone',              precio: 5.00, categoria: 'Tapas' },
-  { id: 'p50', nombre: 'Caracoles',              precio: 2.50, categoria: 'Tapas' },
   { id: 'p51', nombre: 'Bacalao salmorejo',      precio: 3.40, categoria: 'Tapas' },
   { id: 'p52', nombre: 'Salmón guacamole',       precio: 3.40, categoria: 'Tapas' },
   { id: 'p53', nombre: 'Chorizo picante',        precio: 3.00, categoria: 'Tapas' },
