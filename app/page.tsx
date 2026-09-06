@@ -6,6 +6,7 @@ import { useCobros } from "@/hooks/useCobros";
 import { useSesion } from "@/hooks/useSesion";
 import { useComandas } from "@/hooks/useComandas";
 import NumPad from "@/components/NumPad";
+import BottomSheet from "@/components/BottomSheet";
 import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import { supabase } from "@/lib/supabase";
 import { claveItem } from "@/lib/itemIdentity";
@@ -610,26 +611,32 @@ export default function Page() {
     setCobrando(true);
     const now = new Date().toISOString();
     const itemsMerged = [...cuentaActiva.items];
+    // Servidos a trasladar a la cuenta destino (nombre/precio/categoría ya
+    // servidos en la fuente, para que no se dupliquen en cocina).
+    const servidasDestino: { nombre: string; precio: number; categoria: string; cantidad: number }[] = [];
     for (const item of cuentaFuente.items) {
-      // Solo transferir la cantidad que aún no ha salido de cocina
-      const servidaFuente = servidas.find((s) => s.cuenta_id === idCuentaJuntar && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(item.nombre, item.precio, item.categoria));
-      const pendienteFuente = item.cantidad - (servidaFuente?.cantidad_servida ?? 0);
-      if (pendienteFuente <= 0) continue;
+      // La cantidad completa se traslada siempre (para no perder artículos
+      // ya servidos del ticket); solo la parte pendiente afecta a cocina.
+      const servidaFuenteCantidad = servidas.find((s) => s.cuenta_id === idCuentaJuntar && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(item.nombre, item.precio, item.categoria))?.cantidad_servida ?? 0;
+      const pendienteFuente = item.cantidad - servidaFuenteCantidad;
       const existente = itemsMerged.find((i) => claveItem(i.nombre, i.precio, i.categoria) === claveItem(item.nombre, item.precio, item.categoria));
       if (existente) {
         // Si la línea que ya tenía la cuenta destino estaba totalmente
-        // servida, las unidades que llegan de la fuente son un pedido nuevo:
-        // resetear added_at para que no se cuelen al principio de cocina
-        // (mismo caso que handleAgregar/handleSumar).
-        const servidaDestino = servidas.find((s) => s.cuenta_id === cuentaActiva.id && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(item.nombre, item.precio, item.categoria));
-        const destinoTodoServido = (servidaDestino?.cantidad_servida ?? 0) >= existente.cantidad;
-        existente.cantidad += pendienteFuente;
-        if (destinoTodoServido) existente.added_at = now;
+        // servida, las unidades pendientes que llegan de la fuente son un
+        // pedido nuevo: resetear added_at para que no se cuelen al
+        // principio de cocina (mismo caso que handleAgregar/handleSumar).
+        const servidaDestinoCantidad = servidas.find((s) => s.cuenta_id === cuentaActiva.id && claveItem(s.item_nombre, s.precio, s.categoria) === claveItem(item.nombre, item.precio, item.categoria))?.cantidad_servida ?? 0;
+        const destinoTodoServido = servidaDestinoCantidad >= existente.cantidad;
+        existente.cantidad += item.cantidad;
+        if (pendienteFuente > 0 && destinoTodoServido) existente.added_at = now;
+        if (servidaFuenteCantidad > 0) servidasDestino.push({ nombre: item.nombre, precio: item.precio, categoria: item.categoria ?? "", cantidad: servidaDestinoCantidad + servidaFuenteCantidad });
       } else {
-        itemsMerged.push({ ...item, cantidad: pendienteFuente });
+        itemsMerged.push({ ...item });
+        if (servidaFuenteCantidad > 0) servidasDestino.push({ nombre: item.nombre, precio: item.precio, categoria: item.categoria ?? "", cantidad: servidaFuenteCantidad });
       }
     }
     await actualizarCuenta(cuentaActiva.id, itemsMerged);
+    for (const s of servidasDestino) await servirTodo(cuentaActiva.id, s.nombre, s.precio, s.categoria, s.cantidad);
     await limpiarCuenta(idCuentaJuntar);
     await eliminarCuenta(idCuentaJuntar);
     setIdCuentaJuntar(null);
@@ -677,7 +684,7 @@ export default function Page() {
           {/* Indicador de turno activo (solo visual, no es botón) */}
           {sesion && (
             <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold ${
-              sesion.turno === "mañana" ? "bg-amber-500/15 text-amber-400 border border-amber-500/25" : "bg-indigo-500/15 text-indigo-400 border border-indigo-500/25"
+              sesion.turno === "mañana" ? "bg-amber-500/15 text-amber-600 border border-amber-500/25" : "bg-indigo-500/15 text-indigo-600 border border-indigo-500/25"
             }`}>
               {sesion.turno === "mañana" ? (
                 <svg className="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 20 20">
@@ -696,7 +703,7 @@ export default function Page() {
           <button
             onClick={() => setModal("cocina")}
             title="Cocina"
-            className="relative shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation"
+            className="relative shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-500 touch-manipulation"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
@@ -712,7 +719,7 @@ export default function Page() {
           <button
             onClick={() => { setConfirmandoCierre(false); setCobroParaTicket(null); setModal("historial"); }}
             title="Historial"
-            className="relative shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation"
+            className="relative shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-gray-100 active:bg-gray-200 text-gray-500 touch-manipulation"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -733,16 +740,16 @@ export default function Page() {
               onClick={() => { setMostrandoDropdown((v) => !v); setCreando(false); setNuevoNombre(""); }}
               className="w-full flex items-center gap-2 px-3 py-2.5 bg-gray-100 active:bg-gray-200 rounded-xl touch-manipulation min-h-[44px] border border-gray-300/50"
             >
-              <svg className="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 text-gray-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
               </svg>
               <span className="flex-1 text-left text-sm font-medium truncate">
                 {loading ? "…" : (cuentaActiva?.nombre ?? "Seleccionar cuenta")}
               </span>
               {cuentaActiva && (
-                <span className="text-amber-400 text-sm font-semibold tabular-nums shrink-0">{cuentaActiva.total.toFixed(2)}€</span>
+                <span className="text-amber-600 text-sm font-semibold tabular-nums shrink-0">{cuentaActiva.total.toFixed(2)}€</span>
               )}
-              <svg className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${mostrandoDropdown ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className={`w-4 h-4 text-gray-500 shrink-0 transition-transform ${mostrandoDropdown ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </button>
@@ -786,7 +793,7 @@ export default function Page() {
                         </div>
                       </div>
                     ) : (
-                      <button onClick={() => setCreando(true)} className="w-full py-2.5 text-sm text-gray-400 active:bg-gray-100 rounded-xl touch-manipulation text-center">
+                      <button onClick={() => setCreando(true)} className="w-full py-2.5 text-sm text-gray-500 active:bg-gray-100 rounded-xl touch-manipulation text-center">
                         + Nueva cuenta
                       </button>
                     )}
@@ -811,7 +818,7 @@ export default function Page() {
           {/* Lista de compra */}
           <button
             onClick={() => setModal("lista-compra")}
-            className="shrink-0 relative flex items-center justify-center w-11 h-11 rounded-xl bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation border border-gray-300/50"
+            className="shrink-0 relative flex items-center justify-center w-11 h-11 rounded-xl bg-gray-100 active:bg-gray-200 text-gray-500 touch-manipulation border border-gray-300/50"
             title="Lista de compra"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -830,7 +837,7 @@ export default function Page() {
       <div className="md:hidden shrink-0 flex border-b border-gray-200 bg-white">
         {(["carta", "ticket"] as const).map((v) => (
           <button key={v} onClick={() => setVistaMovil(v)}
-            className={`flex-1 py-3 text-sm font-semibold transition-colors touch-manipulation ${vistaMovil === v ? "text-amber-400 border-b-2 border-amber-400" : "text-gray-500"}`}>
+            className={`flex-1 py-3 text-sm font-semibold transition-colors touch-manipulation ${vistaMovil === v ? "text-amber-600 border-b-2 border-amber-400" : "text-gray-500"}`}>
             {v === "ticket" && cuentaActiva ? `Ticket · ${cuentaActiva.total.toFixed(2)}€` : v === "carta" ? "Carta" : "Ticket"}
           </button>
         ))}
@@ -842,7 +849,10 @@ export default function Page() {
         {/* ── LEFT: Ticket ── */}
         <div className={`${vistaMovil === "ticket" ? "flex" : "hidden"} md:flex flex-col w-full md:w-72 lg:w-80 shrink-0 border-r border-gray-200`}>
           {!cuentaActiva ? (
-            <div className="flex-1 flex items-center justify-center text-gray-700 text-sm p-6 text-center leading-relaxed">
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm p-6 text-center leading-relaxed">
+              <svg className="w-10 h-10 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+              </svg>
               Selecciona una cuenta<br />o crea una nueva
             </div>
           ) : (
@@ -869,44 +879,38 @@ export default function Page() {
                   </button>
                 )}
                 <button
-                  onClick={() => { setConfirmandoBorrar(!confirmandoBorrar); setEditandoNombre(false); }}
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm touch-manipulation transition-colors ${confirmandoBorrar ? "bg-red-600 text-white" : "bg-gray-100 text-gray-400 active:text-red-400"}`}
+                  onClick={() => setConfirmandoBorrar(true)}
+                  className="w-8 h-8 rounded-lg flex items-center justify-center text-sm touch-manipulation transition-colors bg-gray-100 text-gray-500 active:text-red-600"
                 >
                   🗑
                 </button>
               </div>
 
-              {/* ── Confirmación borrar ── */}
-              {confirmandoBorrar && (
-                <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-2 bg-red-950/60 border-b border-red-900">
-                  <span className="text-red-300 text-xs">¿Borrar «{cuentaActiva.nombre}»?</span>
-                  <div className="flex gap-1.5">
-                    <button onClick={handleBorrarCuenta} className="px-3 py-1.5 bg-red-600 active:bg-red-700 rounded-lg text-xs font-bold touch-manipulation">Borrar</button>
-                    <button onClick={() => setConfirmandoBorrar(false)} className="px-3 py-1.5 bg-gray-200 active:bg-gray-600 rounded-lg text-xs touch-manipulation">No</button>
-                  </div>
-                </div>
-              )}
-
               {/* ── Lista de items ── */}
               <div className="flex-1 overflow-y-auto scroll-touch p-3 flex flex-col gap-2">
                 {cuentaActiva.items.length === 0 ? (
-                  <p className="text-gray-700 text-sm text-center py-10">Sin artículos todavía</p>
+                  <div className="flex flex-col items-center gap-2 text-gray-400 py-10">
+                    <svg className="w-10 h-10 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                    </svg>
+                    <p className="text-gray-500 text-sm">Sin artículos todavía</p>
+                  </div>
                 ) : (
                   cuentaActiva.items.map((item) => (
                     <div key={claveItem(item.nombre, item.precio, item.categoria)} className="flex items-center gap-1.5 bg-white rounded-xl px-2 py-2.5">
                       <span className="flex-1 text-sm font-medium leading-tight min-w-0 truncate">
                         {item.nombre}
                         {item.categoria && CATS_COCINA.includes(item.categoria) && (
-                          <span className="ml-1.5 text-[10px] font-semibold text-gray-400">
+                          <span className="ml-1.5 text-[10px] font-semibold text-gray-500">
                             ({item.categoria === "Montaditos" ? "montadito" : "tapa"})
                           </span>
                         )}
                       </span>
-                      <button onClick={() => handleRestar(item.nombre, item.precio, item.categoria)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
+                      <button onClick={() => handleRestar(item.nombre, item.precio, item.categoria)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-200 font-bold text-sm shrink-0 touch-manipulation">−</button>
                       <span className="w-5 text-center text-sm tabular-nums shrink-0 font-semibold">{item.cantidad}</span>
-                      <button onClick={() => handleSumar(item.nombre, item.precio, item.categoria)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
-                      <span className="w-12 text-right text-xs text-amber-400 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
-                      <button onClick={() => handleEliminarLinea(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-lg bg-gray-100 active:bg-red-900 text-gray-400 active:text-red-400 text-sm shrink-0 touch-manipulation">×</button>
+                      <button onClick={() => handleSumar(item.nombre, item.precio, item.categoria)} className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-200 font-bold text-sm shrink-0 touch-manipulation">+</button>
+                      <span className="w-12 text-right text-xs text-amber-600 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
+                      <button onClick={() => handleEliminarLinea(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-lg bg-gray-100 active:bg-red-100 text-gray-500 active:text-red-600 text-sm shrink-0 touch-manipulation">×</button>
                     </div>
                   ))
                 )}
@@ -916,8 +920,8 @@ export default function Page() {
               <div className="shrink-0 border-t border-gray-200 p-3 flex flex-col gap-2 bg-gray-50"
                    style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.75rem)" }}>
                 <div className="flex justify-between items-baseline px-1">
-                  <span className="text-gray-400 text-sm uppercase tracking-wider">Total</span>
-                  <span className="text-3xl font-bold text-amber-400 tabular-nums">{cuentaActiva.total.toFixed(2)}€</span>
+                  <span className="text-gray-500 text-sm uppercase tracking-wider">Total</span>
+                  <span className="text-3xl font-bold text-amber-600 tabular-nums">{cuentaActiva.total.toFixed(2)}€</span>
                 </div>
                 {(cuentaActiva.cobrado_parcial ?? 0) > 0 && (
                   <div className="flex justify-between items-center px-1 text-xs">
@@ -931,29 +935,29 @@ export default function Page() {
                     {(cuentaActiva.cobrado_parcial ?? 0) > 0 ? `Cobrar resto (${pendienteCuenta.toFixed(2)}€)` : "Cobrar todo"}
                   </button>
                   <button onClick={abrirCobroParcial} disabled={sinItems}
-                    className="py-4 px-4 bg-green-900 active:bg-green-800 disabled:opacity-25 disabled:cursor-not-allowed rounded-2xl font-semibold text-sm text-green-300 touch-manipulation">
+                    className="py-4 px-4 bg-green-100 active:bg-green-200 disabled:opacity-25 disabled:cursor-not-allowed rounded-2xl font-semibold text-sm text-green-700 touch-manipulation">
                     Parcial
                   </button>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => { setPersonas(2); setModal("dividir"); }} disabled={sinItems}
-                    className="flex-1 py-3 bg-blue-700 active:bg-blue-800 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold touch-manipulation">
+                    className="flex-1 py-3 bg-blue-700 active:bg-blue-800 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-white touch-manipulation">
                     Dividir
                   </button>
                   <button onClick={() => { setEfectivo(""); setModal("cambio"); }} disabled={sinItems}
-                    className="flex-1 py-3 bg-gray-200 active:bg-gray-600 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold touch-manipulation">
+                    className="flex-1 py-3 bg-gray-200 active:bg-gray-300 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold touch-manipulation">
                     Cambio
                   </button>
                   <button
                     onClick={() => { setIdCuentaJuntar(null); setModal("juntar"); }}
                     disabled={cuentasParaJuntar.length === 0}
-                    className="flex-1 py-3 bg-purple-900 active:bg-purple-800 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-purple-300 touch-manipulation"
+                    className="flex-1 py-3 bg-purple-100 active:bg-purple-200 disabled:opacity-25 disabled:cursor-not-allowed rounded-xl text-sm font-semibold text-purple-700 touch-manipulation"
                   >
                     Juntar
                   </button>
                 </div>
                 <button onClick={() => { setCobroParaTicket(null); setModal("ticket"); }} disabled={sinItems}
-                  className="w-full py-2.5 bg-gray-100 active:bg-gray-200 disabled:opacity-25 border border-gray-300 rounded-xl text-sm text-gray-400 font-medium touch-manipulation">
+                  className="w-full py-2.5 bg-gray-100 active:bg-gray-200 disabled:opacity-25 border border-gray-300 rounded-xl text-sm text-gray-500 font-medium touch-manipulation">
                   🧾 Ver ticket
                 </button>
               </div>
@@ -969,7 +973,7 @@ export default function Page() {
             {CATEGORIAS.map((cat) => (
               <button key={cat} onClick={() => setCategoria(cat)}
                 className={`shrink-0 px-4 py-2 rounded-xl text-sm font-semibold touch-manipulation min-h-[40px] ${
-                  categoria === cat ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-400 active:bg-gray-200"
+                  categoria === cat ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-500 active:bg-gray-200"
                 }`}>
                 {cat}
               </button>
@@ -981,7 +985,7 @@ export default function Page() {
             <button
               onClick={() => { setLibreNombre(""); setLibreImporte(""); setModal("libre"); }}
               disabled={!cuentaActiva}
-              className="w-full py-2.5 bg-gray-100 active:bg-gray-200 disabled:opacity-30 border border-dashed border-gray-400 rounded-xl text-sm text-gray-400 font-medium touch-manipulation"
+              className="w-full py-2.5 bg-gray-100 active:bg-gray-200 disabled:opacity-30 border border-dashed border-gray-400 rounded-xl text-sm text-gray-500 font-medium touch-manipulation"
             >
               + Importe libre
             </button>
@@ -991,7 +995,12 @@ export default function Page() {
           <div className="flex-1 overflow-y-auto scroll-touch p-3"
                style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.75rem)" }}>
             {!cuentaActiva ? (
-              <p className="text-gray-700 text-sm text-center py-16">Crea una cuenta para añadir productos</p>
+              <div className="flex flex-col items-center gap-2 text-gray-400 py-16">
+                <svg className="w-10 h-10 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v16m8-8H4" />
+                </svg>
+                <p className="text-gray-500 text-sm">Crea una cuenta para añadir productos</p>
+              </div>
             ) : (
               <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2">
                 {productosFiltrados.map((p) => (
@@ -999,7 +1008,7 @@ export default function Page() {
                     className="flex flex-col items-center justify-center p-3 bg-gray-100 active:bg-gray-200 active:scale-95 rounded-2xl transition-transform touch-manipulation"
                     style={{ minHeight: "72px" }}>
                     <span className="text-sm font-semibold text-center leading-tight">{p.nombre}</span>
-                    <span className="text-amber-400 text-xs mt-1 tabular-nums font-medium">{p.precio.toFixed(2)}€</span>
+                    <span className="text-amber-600 text-xs mt-1 tabular-nums font-medium">{p.precio.toFixed(2)}€</span>
                   </button>
                 ))}
               </div>
@@ -1012,6 +1021,20 @@ export default function Page() {
           MODALES
       ══════════════════════════════════════════════════ */}
 
+      {/* ── Modal: Borrar cuenta ── */}
+      {confirmandoBorrar && cuentaActiva && (
+        <BottomSheet>
+          <div className="p-6 flex flex-col gap-4">
+            <h2 className="text-xl font-bold text-center">¿Borrar cuenta?</h2>
+            <p className="text-center text-gray-500">Se borrará «<span className="text-gray-900 font-semibold">{cuentaActiva.nombre}</span>» y todos sus artículos. Esta acción no se puede deshacer.</p>
+            <button onClick={handleBorrarCuenta} className="w-full py-4 bg-red-600 active:bg-red-700 text-white rounded-2xl font-bold text-base touch-manipulation">
+              Sí, borrar
+            </button>
+            <button onClick={() => setConfirmandoBorrar(false)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cancelar</button>
+          </div>
+        </BottomSheet>
+      )}
+
       {/* ── Modal: Cobro rápido ── */}
       {modal === "cobro-rapido" && (
         <div className="fixed inset-0 bg-black/90 flex flex-col z-50"
@@ -1021,7 +1044,7 @@ export default function Page() {
             {/* Cabecera */}
             <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-gray-200">
               <h2 className="text-lg font-bold">⚡ Cobro rápido</h2>
-              <button onClick={() => { setModal(null); setItemsRapidos([]); setNombreRapido(""); }} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 touch-manipulation">✕</button>
+              <button onClick={() => { setModal(null); setItemsRapidos([]); setNombreRapido(""); }} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-500 touch-manipulation">✕</button>
             </div>
             {/* Nombre opcional */}
             <div className="shrink-0 px-3 pt-2 pb-1">
@@ -1039,7 +1062,7 @@ export default function Page() {
               {CATEGORIAS.map((cat) => (
                 <button key={cat} onClick={() => setCategoriaRapida(cat)}
                   className={`shrink-0 px-3 py-1.5 rounded-lg text-sm font-semibold touch-manipulation ${
-                    categoriaRapida === cat ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-400 active:bg-gray-200"
+                    categoriaRapida === cat ? "bg-amber-500 text-black" : "bg-gray-100 text-gray-500 active:bg-gray-200"
                   }`}>
                   {cat}
                 </button>
@@ -1054,7 +1077,7 @@ export default function Page() {
                   return (
                     <button key={p.id} onClick={() => agregarItemRapido(p.nombre, p.precio, p.categoria)}
                       className={`relative flex flex-col items-center justify-center p-3 rounded-2xl active:scale-95 transition-transform touch-manipulation ${
-                        cant > 0 ? "bg-amber-900/60 border border-amber-700" : "bg-gray-100 active:bg-gray-200"
+                        cant > 0 ? "bg-amber-100 border border-amber-400" : "bg-gray-100 active:bg-gray-200"
                       }`}
                       style={{ minHeight: "72px" }}>
                       {cant > 0 && (
@@ -1063,7 +1086,7 @@ export default function Page() {
                         </span>
                       )}
                       <span className="text-sm font-semibold text-center leading-tight">{p.nombre}</span>
-                      <span className="text-amber-400 text-xs mt-1 tabular-nums font-medium">{p.precio.toFixed(2)}€</span>
+                      <span className="text-amber-600 text-xs mt-1 tabular-nums font-medium">{p.precio.toFixed(2)}€</span>
                     </button>
                   );
                 })}
@@ -1077,10 +1100,10 @@ export default function Page() {
                   {itemsRapidos.map((item) => (
                     <div key={claveItem(item.nombre, item.precio, item.categoria)} className="flex items-center gap-2">
                       <span className="flex-1 text-sm truncate">{item.nombre}</span>
-                      <button onClick={() => restarItemRapido(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation">−</button>
+                      <button onClick={() => restarItemRapido(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-red-200 font-bold text-sm shrink-0 touch-manipulation">−</button>
                       <span className="w-5 text-center text-sm tabular-nums font-bold shrink-0">{item.cantidad}</span>
-                      <button onClick={() => agregarItemRapido(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation">+</button>
-                      <span className="w-14 text-right text-xs text-amber-400 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
+                      <button onClick={() => agregarItemRapido(item.nombre, item.precio, item.categoria)} className="w-7 h-7 rounded-full bg-gray-200 active:bg-green-200 font-bold text-sm shrink-0 touch-manipulation">+</button>
+                      <span className="w-14 text-right text-xs text-amber-600 tabular-nums shrink-0 font-medium">{(item.precio * item.cantidad).toFixed(2)}€</span>
                     </div>
                   ))}
                 </div>
@@ -1090,8 +1113,8 @@ export default function Page() {
                   <p className="text-center text-gray-500 text-sm py-1">Toca un producto para añadirlo</p>
                 )}
                 <div className="flex justify-between items-baseline px-1">
-                  <span className="text-gray-400 text-sm uppercase tracking-wider">Total</span>
-                  <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalRapido.toFixed(2)}€</span>
+                  <span className="text-gray-500 text-sm uppercase tracking-wider">Total</span>
+                  <span className="text-2xl font-bold text-amber-600 tabular-nums">{totalRapido.toFixed(2)}€</span>
                 </div>
                 <div className="flex gap-1.5">
                   {(["efectivo", "tarjeta"] as const).map((m) => (
@@ -1121,13 +1144,10 @@ export default function Page() {
 
       {/* ── Modal: Lista de compra ── */}
       {modal === "lista-compra" && (
-        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
-             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-md flex flex-col" style={{ maxHeight: "85dvh" }}>
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mt-3 sm:hidden" />
+        <BottomSheet maxWidth="md" maxHeight="85dvh">
             <div className="flex items-center justify-between px-5 pt-4 pb-3 shrink-0">
               <h2 className="text-xl font-bold">🛒 Lista de compra</h2>
-              <button onClick={() => setModal(null)} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 text-sm touch-manipulation">✕</button>
+              <button onClick={() => setModal(null)} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-500 text-sm touch-manipulation">✕</button>
             </div>
 
             {/* Input añadir */}
@@ -1151,7 +1171,12 @@ export default function Page() {
             {/* Lista */}
             <div className="flex-1 overflow-y-auto scroll-touch px-4 flex flex-col gap-1.5 pb-2">
               {listaCompra.length === 0 ? (
-                <p className="text-gray-500 text-sm text-center py-10">La lista está vacía</p>
+                <div className="flex flex-col items-center gap-2 text-gray-400 py-10">
+                  <svg className="w-10 h-10 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                  </svg>
+                  <p className="text-gray-500 text-sm">La lista está vacía</p>
+                </div>
               ) : (
                 listaCompra.map((item, idx) => (
                   <div key={idx} className={`flex items-center gap-3 rounded-xl px-4 py-3 ${item.hecho ? "bg-gray-50" : "bg-gray-100"}`}>
@@ -1169,8 +1194,8 @@ export default function Page() {
                         </svg>
                       )}
                     </button>
-                    <span className={`flex-1 text-sm ${item.hecho ? "line-through text-gray-400" : "text-gray-900"}`}>{item.texto}</span>
-                    <button onClick={() => eliminarItemCompra(idx)} className="w-6 h-6 flex items-center justify-center text-gray-300 active:text-red-400 touch-manipulation text-base shrink-0">×</button>
+                    <span className={`flex-1 text-sm ${item.hecho ? "line-through text-gray-500" : "text-gray-900"}`}>{item.texto}</span>
+                    <button onClick={() => eliminarItemCompra(idx)} className="w-6 h-6 flex items-center justify-center text-gray-300 active:text-red-600 touch-manipulation text-base shrink-0">×</button>
                   </div>
                 ))
               )}
@@ -1183,18 +1208,15 @@ export default function Page() {
                   Borrar completados
                 </button>
               )}
-              <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-xl text-gray-400 touch-manipulation">Cerrar</button>
+              <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-xl text-gray-500 touch-manipulation">Cerrar</button>
             </div>
-          </div>
-        </div>
+        </BottomSheet>
       )}
 
       {/* ── Modal: Importe libre ── */}
       {modal === "libre" && cuentaActiva && (
-        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
-             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl p-5 w-full sm:max-w-sm flex flex-col gap-3">
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto sm:hidden mb-1" />
+        <BottomSheet>
+          <div className="p-5 flex flex-col gap-3">
             <h2 className="text-xl font-bold text-center">Importe libre</h2>
             <input
               value={libreNombre}
@@ -1225,9 +1247,9 @@ export default function Page() {
               className="w-full py-4 bg-amber-500 active:bg-amber-600 disabled:opacity-30 disabled:cursor-not-allowed rounded-2xl font-bold text-base touch-manipulation">
               Añadir al ticket
             </button>
-            <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+            <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cancelar</button>
           </div>
-        </div>
+        </BottomSheet>
       )}
 
       {/* ── Modal: Ticket (vista previa o recibo ya cobrado) ── */}
@@ -1236,7 +1258,7 @@ export default function Page() {
              style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
           <div className="w-full max-w-xs flex justify-end mb-3">
             <button onClick={() => { setModal(cobroParaTicket ? "historial" : null); setCobroParaTicket(null); }}
-              className="w-8 h-8 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 text-sm touch-manipulation">
+              className="w-8 h-8 rounded-full bg-gray-100 active:bg-gray-200 text-gray-500 text-sm touch-manipulation">
               ✕
             </button>
           </div>
@@ -1244,7 +1266,7 @@ export default function Page() {
                style={{ fontFamily: "ui-monospace, monospace" }}>
             <div className="text-center py-5 px-4 border-b border-dashed border-gray-300">
               <img src="/logo.jpg" alt="Cervecería El Timbre" className="h-16 w-auto mx-auto object-contain" />
-              <p className="text-xs text-gray-400 mt-1">
+              <p className="text-xs text-gray-500 mt-1">
                 {ticketData.fecha.toLocaleDateString("es-ES", { day: "2-digit", month: "long", year: "numeric" })}
                 {" · "}
                 {ticketData.fecha.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
@@ -1253,9 +1275,9 @@ export default function Page() {
             </div>
             <div className="px-4 py-3 flex flex-col gap-1.5">
               {ticketData.items.map((item) => (
-                <div key={item.nombre} className="flex justify-between items-baseline text-sm">
+                <div key={claveItem(item.nombre, item.precio, item.categoria)} className="flex justify-between items-baseline text-sm">
                   <span className="flex-1 truncate">{item.nombre}</span>
-                  <span className="text-gray-400 text-xs mx-2 shrink-0">{item.cantidad}×{item.precio.toFixed(2)}</span>
+                  <span className="text-gray-500 text-xs mx-2 shrink-0">{item.cantidad}×{item.precio.toFixed(2)}</span>
                   <span className="font-semibold tabular-nums shrink-0">{(item.precio * item.cantidad).toFixed(2)}€</span>
                 </div>
               ))}
@@ -1281,7 +1303,7 @@ export default function Page() {
               </div>
             )}
             <div className="text-center py-3 border-t border-dashed border-gray-300">
-              <p className="text-xs text-gray-400">¡Gracias por tu visita!</p>
+              <p className="text-xs text-gray-500">¡Gracias por tu visita!</p>
             </div>
           </div>
         </div>
@@ -1289,13 +1311,10 @@ export default function Page() {
 
       {/* ── Modal: Cobro parcial ── */}
       {modal === "parcial" && cuentaActiva && (
-        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
-             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm flex flex-col" style={{ maxHeight: "85dvh" }}>
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mt-3 sm:hidden" />
+        <BottomSheet maxHeight="85dvh">
             <div className="px-5 pt-4 pb-3 shrink-0">
               <h2 className="text-xl font-bold">Cobro parcial</h2>
-              <p className="text-gray-400 text-sm mt-0.5">{cuentaActiva.nombre} · pendiente {pendienteCuenta.toFixed(2)}€</p>
+              <p className="text-gray-500 text-sm mt-0.5">{cuentaActiva.nombre} · pendiente {pendienteCuenta.toFixed(2)}€</p>
             </div>
             {/* Toggle Por artículos / Por importe */}
             <div className="shrink-0 flex gap-1.5 px-4 pb-3">
@@ -1335,33 +1354,33 @@ export default function Page() {
                         <p className="text-sm font-medium truncate">
                           {linea.nombre}
                           {linea.categoria && CATS_COCINA.includes(linea.categoria) && (
-                            <span className="ml-1.5 text-[10px] font-semibold text-gray-400">
+                            <span className="ml-1.5 text-[10px] font-semibold text-gray-500">
                               ({linea.categoria === "Montaditos" ? "montadito" : "tapa"})
                             </span>
                           )}
                         </p>
-                        <p className="text-xs text-gray-400">{linea.precio.toFixed(2)}€/u · hay {linea.max}</p>
+                        <p className="text-xs text-gray-500">{linea.precio.toFixed(2)}€/u · hay {linea.max}</p>
                       </div>
                       <button
                         onClick={() => setSeleccionParcial((prev) => prev.map((l, i) => i === idx ? { ...l, cobrar: Math.max(0, l.cobrar - 1) } : l))}
-                        className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-800 font-bold text-sm shrink-0 touch-manipulation"
+                        className="w-8 h-8 rounded-full bg-gray-200 active:bg-red-200 font-bold text-sm shrink-0 touch-manipulation"
                       >−</button>
                       <span className={`w-6 text-center text-sm tabular-nums font-bold shrink-0 ${linea.cobrar === 0 ? "text-gray-500" : "text-gray-900"}`}>
                         {linea.cobrar}
                       </span>
                       <button
                         onClick={() => setSeleccionParcial((prev) => prev.map((l, i) => i === idx ? { ...l, cobrar: Math.min(l.max, l.cobrar + 1) } : l))}
-                        className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-800 font-bold text-sm shrink-0 touch-manipulation"
+                        className="w-8 h-8 rounded-full bg-gray-200 active:bg-green-200 font-bold text-sm shrink-0 touch-manipulation"
                       >+</button>
-                      <span className={`w-14 text-right text-sm tabular-nums shrink-0 font-medium ${linea.cobrar === 0 ? "text-gray-500" : "text-amber-400"}`}>
+                      <span className={`w-14 text-right text-sm tabular-nums shrink-0 font-medium ${linea.cobrar === 0 ? "text-gray-500" : "text-amber-600"}`}>
                         {(linea.precio * linea.cobrar).toFixed(2)}€
                       </span>
                     </div>
                   ))}
                 </div>
                 <div className="shrink-0 border-t border-gray-200 px-5 py-3 flex justify-between items-baseline">
-                  <span className="text-gray-400 text-sm uppercase tracking-wider">A cobrar</span>
-                  <span className="text-2xl font-bold text-amber-400 tabular-nums">
+                  <span className="text-gray-500 text-sm uppercase tracking-wider">A cobrar</span>
+                  <span className="text-2xl font-bold text-amber-600 tabular-nums">
                     {seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€
                   </span>
                 </div>
@@ -1373,13 +1392,13 @@ export default function Page() {
                   >
                     {cobrando ? "Guardando…" : `Cobrar ${seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€`}
                   </button>
-                  <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+                  <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cancelar</button>
                 </div>
               </>
             ) : (
               <>
                 <div className="flex-1 overflow-y-auto scroll-touch px-4 pb-2 flex flex-col gap-3">
-                  <p className="text-xs text-gray-400 text-center">
+                  <p className="text-xs text-gray-500 text-center">
                     No mueve artículos del ticket — cocina sigue viendo lo mismo. Solo lleva la cuenta de cuánto se ha pagado ya.
                   </p>
                   <div className="bg-gray-100 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">
@@ -1387,7 +1406,7 @@ export default function Page() {
                   </div>
                   <NumPad value={importeParcial} onChange={setImporteParcial} />
                   {parseFloat(importeParcial || "0") > pendienteCuenta + 0.001 && (
-                    <p className="text-center text-xs text-red-400">No puede superar lo pendiente ({pendienteCuenta.toFixed(2)}€)</p>
+                    <p className="text-center text-xs text-red-600">No puede superar lo pendiente ({pendienteCuenta.toFixed(2)}€)</p>
                   )}
                 </div>
                 <div className="shrink-0 px-4 pb-4 flex flex-col gap-2">
@@ -1398,28 +1417,25 @@ export default function Page() {
                   >
                     {cobrando ? "Guardando…" : `Cobrar ${(parseFloat(importeParcial) || 0).toFixed(2)}€ a cuenta`}
                   </button>
-                  <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+                  <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cancelar</button>
                 </div>
               </>
             )}
-          </div>
-        </div>
+        </BottomSheet>
       )}
 
       {/* ── Modal: Cobrar ── */}
       {modal === "cobrar" && cuentaActiva && (
-        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
-             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full sm:max-w-sm flex flex-col gap-4">
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto sm:hidden mb-1" />
+        <BottomSheet>
+          <div className="p-6 flex flex-col gap-4">
             <h2 className="text-xl font-bold text-center">Cobrar cuenta</h2>
-            <p className="text-center text-gray-400 font-medium">{cuentaActiva.nombre}</p>
+            <p className="text-center text-gray-500 font-medium">{cuentaActiva.nombre}</p>
             {(cuentaActiva.cobrado_parcial ?? 0) > 0 && (
-              <p className="text-center text-xs text-gray-400">
+              <p className="text-center text-xs text-gray-500">
                 Total {cuentaActiva.total.toFixed(2)}€ · ya pagado {cuentaActiva.cobrado_parcial!.toFixed(2)}€
               </p>
             )}
-            <p className="text-center text-5xl font-bold text-amber-400 tabular-nums py-2">{pendienteCuenta.toFixed(2)}€</p>
+            <p className="text-center text-5xl font-bold text-amber-600 tabular-nums py-2">{pendienteCuenta.toFixed(2)}€</p>
             <div className="flex gap-1.5">
               {(["efectivo", "tarjeta"] as const).map((m) => (
                 <button
@@ -1437,68 +1453,66 @@ export default function Page() {
               className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-50 rounded-2xl font-bold text-white text-lg touch-manipulation">
               {cobrando ? "Guardando…" : "Confirmar cobro"}
             </button>
-            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cancelar</button>
           </div>
-        </div>
+        </BottomSheet>
       )}
 
       {/* ── Modal: Dividir ── */}
       {modal === "dividir" && cuentaActiva && (
-        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
-             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl p-6 w-full sm:max-w-sm flex flex-col gap-4">
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto sm:hidden mb-1" />
+        <BottomSheet>
+          <div className="p-6 flex flex-col gap-4">
             <h2 className="text-xl font-bold text-center">Dividir cuenta</h2>
-            <p className="text-center text-gray-400">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
+            <p className="text-center text-gray-500">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
             <div className="flex items-center justify-center gap-6 py-2">
-              <button onClick={() => setPersonas((p) => Math.max(2, p - 1))} className="w-14 h-14 rounded-full bg-gray-200 active:bg-gray-600 text-2xl font-bold touch-manipulation">−</button>
+              <button onClick={() => setPersonas((p) => Math.max(2, p - 1))} className="w-14 h-14 rounded-full bg-gray-200 active:bg-gray-300 text-2xl font-bold touch-manipulation">−</button>
               <span className="text-4xl font-bold w-12 text-center tabular-nums">{personas}</span>
-              <button onClick={() => setPersonas((p) => p + 1)} className="w-14 h-14 rounded-full bg-gray-200 active:bg-gray-600 text-2xl font-bold touch-manipulation">+</button>
+              <button onClick={() => setPersonas((p) => p + 1)} className="w-14 h-14 rounded-full bg-gray-200 active:bg-gray-300 text-2xl font-bold touch-manipulation">+</button>
             </div>
-            <p className="text-center text-gray-400 text-sm">{personas} personas</p>
+            <p className="text-center text-gray-500 text-sm">{personas} personas</p>
             <div className="bg-gray-100 rounded-2xl p-5 text-center">
-              <p className="text-gray-400 text-sm mb-1 uppercase tracking-wider">Cada uno paga</p>
-              <p className="text-5xl font-bold text-amber-400 tabular-nums">{(cuentaActiva.total / personas).toFixed(2)}€</p>
+              <p className="text-gray-500 text-sm mb-1 uppercase tracking-wider">Cada uno paga</p>
+              <p className="text-5xl font-bold text-amber-600 tabular-nums">{(cuentaActiva.total / personas).toFixed(2)}€</p>
             </div>
-            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cerrar</button>
+            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cerrar</button>
           </div>
-        </div>
+        </BottomSheet>
       )}
 
       {/* ── Modal: Cambio ── */}
       {modal === "cambio" && cuentaActiva && (
-        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
-             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl p-5 w-full sm:max-w-sm flex flex-col gap-3">
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto sm:hidden mb-1" />
+        <BottomSheet>
+          <div className="p-5 flex flex-col gap-3">
             <h2 className="text-xl font-bold text-center">Calcular cambio</h2>
-            <p className="text-center text-gray-400">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
+            <p className="text-center text-gray-500">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
             <div className="bg-gray-100 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">{efectivo || "0"}€</div>
             <NumPad value={efectivo} onChange={setEfectivo} />
             {parseFloat(efectivo || "0") > 0 && (
               <div className="bg-gray-100 rounded-2xl p-4 text-center">
-                <p className="text-gray-400 text-xs uppercase tracking-wider mb-1">Cambio</p>
-                <p className={`text-4xl font-bold tabular-nums ${cambio >= 0 ? "text-green-400" : "text-red-400"}`}>{cambio.toFixed(2)}€</p>
+                <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">Cambio</p>
+                <p className={`text-4xl font-bold tabular-nums ${cambio >= 0 ? "text-green-600" : "text-red-600"}`}>{cambio.toFixed(2)}€</p>
               </div>
             )}
-            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cerrar</button>
+            <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cerrar</button>
           </div>
-        </div>
+        </BottomSheet>
       )}
 
       {/* ── Modal: Juntar cuentas ── */}
       {modal === "juntar" && cuentaActiva && (
-        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
-             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-sm flex flex-col" style={{ maxHeight: "75dvh" }}>
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mt-3 sm:hidden" />
+        <BottomSheet maxHeight="75dvh">
             <div className="px-5 pt-4 pb-2 shrink-0">
               <h2 className="text-xl font-bold">Juntar con…</h2>
-              <p className="text-gray-400 text-sm mt-0.5">Los artículos se añadirán a <span className="text-gray-900 font-semibold">«{cuentaActiva.nombre}»</span></p>
+              <p className="text-gray-500 text-sm mt-0.5">Los artículos se añadirán a <span className="text-gray-900 font-semibold">«{cuentaActiva.nombre}»</span></p>
             </div>
             <div className="flex-1 overflow-y-auto scroll-touch px-4 py-2 flex flex-col gap-2">
               {cuentasParaJuntar.length === 0 ? (
-                <p className="text-gray-500 text-sm text-center py-8">No hay otras cuentas abiertas</p>
+                <div className="flex flex-col items-center gap-2 text-gray-400 py-8">
+                  <svg className="w-10 h-10 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                  <p className="text-gray-500 text-sm">No hay otras cuentas abiertas</p>
+                </div>
               ) : (
                 cuentasParaJuntar.map((c) => (
                   <button
@@ -1506,12 +1520,12 @@ export default function Page() {
                     onClick={() => setIdCuentaJuntar(c.id === idCuentaJuntar ? null : c.id)}
                     className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl border-2 touch-manipulation transition-colors ${
                       c.id === idCuentaJuntar
-                        ? "bg-purple-900/60 border-purple-500 text-white"
+                        ? "bg-purple-500 border-purple-500 text-white"
                         : "bg-gray-100 border-gray-200 active:border-gray-400 text-gray-500"
                     }`}
                   >
                     <span className="font-semibold text-sm">{c.nombre}</span>
-                    <span className="text-amber-400 tabular-nums text-sm">{c.total.toFixed(2)}€</span>
+                    <span className={`tabular-nums text-sm ${c.id === idCuentaJuntar ? "text-white" : "text-amber-600"}`}>{c.total.toFixed(2)}€</span>
                   </button>
                 ))
               )}
@@ -1520,31 +1534,32 @@ export default function Page() {
               <button
                 onClick={handleJuntarCuentas}
                 disabled={!idCuentaJuntar || cobrando}
-                className="w-full py-4 bg-purple-700 active:bg-purple-600 disabled:opacity-30 rounded-2xl font-bold text-base touch-manipulation"
+                className="w-full py-4 bg-purple-700 active:bg-purple-600 disabled:opacity-30 text-white rounded-2xl font-bold text-base touch-manipulation"
               >
                 {cobrando ? "Juntando…" : idCuentaJuntar
                   ? `Juntar con «${cuentas.find((c) => c.id === idCuentaJuntar)?.nombre}»`
                   : "Selecciona una cuenta"}
               </button>
-              <button onClick={() => { setModal(null); setIdCuentaJuntar(null); }} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-400 touch-manipulation">Cancelar</button>
+              <button onClick={() => { setModal(null); setIdCuentaJuntar(null); }} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cancelar</button>
             </div>
-          </div>
-        </div>
+        </BottomSheet>
       )}
 
       {/* ── Modal: Historial ── */}
       {modal === "historial" && (
-        <div className="fixed inset-0 bg-black/80 flex items-end sm:items-center justify-center z-50"
-             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <div className="bg-white rounded-t-3xl sm:rounded-3xl w-full sm:max-w-md flex flex-col" style={{ maxHeight: "85dvh" }}>
-            <div className="w-10 h-1 bg-gray-200 rounded-full mx-auto mt-3 sm:hidden" />
+        <BottomSheet maxWidth="md" maxHeight="85dvh">
             <div className="flex items-center justify-between px-5 pt-4 pb-3 shrink-0">
               <h2 className="text-xl font-bold">Historial del día</h2>
-              <button onClick={() => { setModal(null); setConfirmandoCierre(false); setConfirmandoCierreTurno(false); setConfirmandoRestaurar(false); }} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-400 text-sm touch-manipulation">✕</button>
+              <button onClick={() => { setModal(null); setConfirmandoCierre(false); setConfirmandoCierreTurno(false); setConfirmandoRestaurar(false); }} className="w-9 h-9 rounded-full bg-gray-100 active:bg-gray-200 text-gray-500 text-sm touch-manipulation">✕</button>
             </div>
             <div className="flex-1 overflow-y-auto scroll-touch px-4 pb-2 flex flex-col gap-3">
               {cobros.length === 0 ? (
-                <p className="text-gray-500 text-sm text-center py-10">No hay cuentas cobradas aún</p>
+                <div className="flex flex-col items-center gap-2 text-gray-400 py-10">
+                  <svg className="w-10 h-10 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-gray-500 text-sm">No hay cuentas cobradas aún</p>
+                </div>
               ) : (() => {
                 // Extraer sesiones únicas con su timestamp de inicio real
                 const sesionesMap = new Map<string, { turno: string; startTime: number }>();
@@ -1581,7 +1596,7 @@ export default function Page() {
                   const efectivoSesion = sesion.cobros.filter((c) => c.metodo_pago !== "tarjeta").reduce((s, c) => s + Number(c.total), 0);
                   const tarjetaSesion = sesion.cobros.filter((c) => c.metodo_pago === "tarjeta").reduce((s, c) => s + Number(c.total), 0);
                   const etiqueta = sesion.turno === "mañana" ? "Turno de Mañana" : "Turno de Tarde";
-                  const colorEtiqueta = sesion.turno === "mañana" ? "text-orange-400" : "text-indigo-400";
+                  const colorEtiqueta = sesion.turno === "mañana" ? "text-orange-600" : "text-indigo-600";
                   const timestamp = sesion.startTime || null;
                   const horaInicio = timestamp
                     ? new Date(timestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })
@@ -1603,7 +1618,7 @@ export default function Page() {
                           >
                             <div className="flex-1 min-w-0">
                               <p className="font-semibold text-sm">{cobro.nombre_cuenta}</p>
-                              <p className="text-gray-400 text-xs mt-0.5">
+                              <p className="text-gray-500 text-xs mt-0.5">
                                 {new Date(cobro.created_at).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
                                 {" · "}
                                 {cobro.items.length} artículo{cobro.items.length !== 1 ? "s" : ""}
@@ -1613,14 +1628,14 @@ export default function Page() {
                               <span className="text-xs" title={cobro.metodo_pago === "tarjeta" ? "Tarjeta" : "Efectivo"}>
                                 {cobro.metodo_pago === "tarjeta" ? "💳" : "💶"}
                               </span>
-                              <span className="text-amber-400 font-bold tabular-nums">{Number(cobro.total).toFixed(2)}€</span>
-                              <span className="text-gray-400 text-xs">🧾</span>
+                              <span className="text-amber-600 font-bold tabular-nums">{Number(cobro.total).toFixed(2)}€</span>
+                              <span className="text-gray-500 text-xs">🧾</span>
                             </div>
                           </button>
                         ))}
-                        <div className="flex justify-between px-1 py-1 text-xs text-gray-400">
+                        <div className="flex justify-between px-1 py-1 text-xs text-gray-500">
                           <span>{sesion.cobros.length} cobro{sesion.cobros.length !== 1 ? "s" : ""} · 💶{efectivoSesion.toFixed(2)}€ · 💳{tarjetaSesion.toFixed(2)}€</span>
-                          <span className="font-semibold text-gray-400">{totalSesion.toFixed(2)}€</span>
+                          <span className="font-semibold text-gray-500">{totalSesion.toFixed(2)}€</span>
                         </div>
                       </div>
                     </div>
@@ -1633,7 +1648,7 @@ export default function Page() {
               <div className="flex-1 flex items-center gap-2">
                 {editandoCaja ? (
                   <div className="flex items-center gap-1.5 flex-1">
-                    <span className="text-xs text-gray-400 shrink-0">Caja:</span>
+                    <span className="text-xs text-gray-500 shrink-0">Caja:</span>
                     <input
                       autoFocus
                       type="number"
@@ -1651,34 +1666,34 @@ export default function Page() {
                       className="w-24 bg-gray-100 border border-amber-400 rounded-lg px-2 py-1 text-sm font-semibold outline-none tabular-nums"
                       style={{ fontSize: "16px" }}
                     />
-                    <span className="text-xs text-gray-400">€</span>
+                    <span className="text-xs text-gray-500">€</span>
                     <button
                       onClick={() => { actualizarCaja(parseFloat(cajaEditada) || 0); setEditandoCaja(false); }}
                       className="text-xs px-2 py-1 bg-amber-500 text-black rounded-lg font-semibold touch-manipulation"
                     >OK</button>
-                    <button onClick={() => setEditandoCaja(false)} className="text-xs text-gray-400 touch-manipulation">✕</button>
+                    <button onClick={() => setEditandoCaja(false)} className="text-xs text-gray-500 touch-manipulation">✕</button>
                   </div>
                 ) : (
                   <button
                     onClick={() => { setCajaEditada(sesion ? String(sesion.caja_inicio) : "0"); setEditandoCaja(true); }}
                     className="flex items-center gap-1.5 text-left touch-manipulation group"
                   >
-                    <span className="text-xs text-gray-400">Caja:</span>
+                    <span className="text-xs text-gray-500">Caja:</span>
                     <span className="text-sm font-semibold text-gray-600 tabular-nums">{Number(sesion?.caja_inicio ?? 0).toFixed(2)}€</span>
                     <span className="text-[10px] text-gray-300 group-active:text-gray-500">✏</span>
                   </button>
                 )}
               </div>
               <div className="text-right shrink-0">
-                <p className="text-xs text-gray-400">{cobros.length} cobro{cobros.length !== 1 ? "s" : ""}</p>
-                <span className="text-2xl font-bold text-amber-400 tabular-nums">{totalDia.toFixed(2)}€</span>
-                <p className="text-[10px] text-gray-400 tabular-nums mt-0.5">💶 {totalEfectivoDia.toFixed(2)}€ · 💳 {totalTarjetaDia.toFixed(2)}€</p>
+                <p className="text-xs text-gray-500">{cobros.length} cobro{cobros.length !== 1 ? "s" : ""}</p>
+                <span className="text-2xl font-bold text-amber-600 tabular-nums">{totalDia.toFixed(2)}€</span>
+                <p className="text-[10px] text-gray-500 tabular-nums mt-0.5">💶 {totalEfectivoDia.toFixed(2)}€ · 💳 {totalTarjetaDia.toFixed(2)}€</p>
               </div>
             </div>
             {/* Backup info */}
             {backupTimestamp && (
               <div className="shrink-0 px-4 pb-1 flex items-center justify-between gap-2">
-                <span className="text-xs text-gray-400">
+                <span className="text-xs text-gray-500">
                   Copia: {new Date(backupTimestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
                 </span>
                 <div className="flex gap-2">
@@ -1703,12 +1718,12 @@ export default function Page() {
                     </svg>
                     Cerrar turno
                   </button>
-                  <button onClick={() => setConfirmandoCierre(true)} className="w-full py-3.5 bg-red-900/40 active:bg-red-800/60 text-red-400 rounded-2xl text-sm font-semibold touch-manipulation">Cerrar día</button>
+                  <button onClick={() => setConfirmandoCierre(true)} className="w-full py-3.5 bg-red-50 active:bg-red-100 text-red-600 rounded-2xl text-sm font-semibold touch-manipulation">Cerrar día</button>
                 </>
               )}
               {confirmandoRestaurar && (
                 <>
-                  <p className="text-center text-sm text-gray-400 pb-1">
+                  <p className="text-center text-sm text-gray-500 pb-1">
                     ¿Restaurar la última copia de seguridad{backupTimestamp ? ` (${new Date(backupTimestamp).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })})` : ""}?
                   </p>
                   <button
@@ -1723,38 +1738,37 @@ export default function Page() {
                   >
                     {restaurando ? "Restaurando…" : "Sí, restaurar"}
                   </button>
-                  <button onClick={() => setConfirmandoRestaurar(false)} disabled={restaurando} className="w-full py-3 bg-gray-100 active:bg-gray-200 disabled:opacity-50 text-gray-400 rounded-2xl text-sm touch-manipulation">Cancelar</button>
+                  <button onClick={() => setConfirmandoRestaurar(false)} disabled={restaurando} className="w-full py-3 bg-gray-100 active:bg-gray-200 disabled:opacity-50 text-gray-500 rounded-2xl text-sm touch-manipulation">Cancelar</button>
                 </>
               )}
               {confirmandoCierreTurno && (
                 <>
-                  <p className="text-center text-sm text-gray-400 pb-1">Se cerrará el turno y se pedirá el siguiente al abrir la app.</p>
+                  <p className="text-center text-sm text-gray-500 pb-1">Se cerrará el turno y se pedirá el siguiente al abrir la app.</p>
                   <button
                     onClick={async () => { await cerrarTurno(); setConfirmandoCierreTurno(false); setModal(null); }}
                     className="w-full py-4 bg-gray-200 active:bg-gray-300 text-gray-700 rounded-2xl text-sm font-bold touch-manipulation"
                   >
                     Sí, cerrar turno
                   </button>
-                  <button onClick={() => setConfirmandoCierreTurno(false)} className="w-full py-3 bg-gray-100 active:bg-gray-200 text-gray-400 rounded-2xl text-sm touch-manipulation">Cancelar</button>
+                  <button onClick={() => setConfirmandoCierreTurno(false)} className="w-full py-3 bg-gray-100 active:bg-gray-200 text-gray-500 rounded-2xl text-sm touch-manipulation">Cancelar</button>
                 </>
               )}
               {confirmandoCierre && (
                 <>
-                  <p className="text-center text-sm text-gray-400 pb-1">¿Seguro? Se borrará todo el historial de hoy.</p>
+                  <p className="text-center text-sm text-gray-500 pb-1">¿Seguro? Se borrará todo el historial de hoy.</p>
                   {cuentas.length > 0 && (
-                    <p className="text-center text-sm text-red-400 font-semibold pb-1">
+                    <p className="text-center text-sm text-red-600 font-semibold pb-1">
                       ⚠ Hay {cuentas.length} cuenta{cuentas.length !== 1 ? "s" : ""} abierta{cuentas.length !== 1 ? "s" : ""} — también se eliminarán.
                     </p>
                   )}
-                  <button onClick={handleCerrarDia} disabled={cerrandoDia} className="w-full py-4 bg-red-600 active:bg-red-700 disabled:opacity-50 text-gray-900 rounded-2xl text-sm font-bold touch-manipulation">
+                  <button onClick={handleCerrarDia} disabled={cerrandoDia} className="w-full py-4 bg-red-600 active:bg-red-700 disabled:opacity-50 text-white rounded-2xl text-sm font-bold touch-manipulation">
                     {cerrandoDia ? "Cerrando…" : "Sí, cerrar y borrar historial"}
                   </button>
-                  <button onClick={() => setConfirmandoCierre(false)} disabled={cerrandoDia} className="w-full py-4 bg-gray-100 active:bg-gray-200 disabled:opacity-50 text-gray-400 rounded-2xl text-sm touch-manipulation">Cancelar</button>
+                  <button onClick={() => setConfirmandoCierre(false)} disabled={cerrandoDia} className="w-full py-4 bg-gray-100 active:bg-gray-200 disabled:opacity-50 text-gray-500 rounded-2xl text-sm touch-manipulation">Cancelar</button>
                 </>
               )}
             </div>
-          </div>
-        </div>
+        </BottomSheet>
       )}
       {/* ── Modal Cocina ── */}
       {modal === "cocina" && (
@@ -1775,7 +1789,7 @@ export default function Page() {
 
           <div className="flex-1 overflow-y-auto px-4 py-4">
             {pedidosPendientes.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-400">
+              <div className="flex flex-col items-center justify-center h-full gap-3 text-gray-500">
                 <svg className="w-14 h-14 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                 </svg>
@@ -1824,7 +1838,7 @@ export default function Page() {
              style={{ paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)" }}>
           <div className="flex flex-col items-center gap-2">
             <img src="/logo.jpg" alt="Cervecería El Timbre" className="w-36 h-36 rounded-3xl object-contain bg-white p-2 shadow-xl" />
-            <p className="text-gray-400 text-sm mt-1">
+            <p className="text-gray-500 text-sm mt-1">
               {loadingSesion ? "Cargando…" : turnoSeleccionado ? "¿Cuánto hay en caja?" : "¿Qué turno empieza ahora?"}
             </p>
           </div>
@@ -1857,9 +1871,9 @@ export default function Page() {
                   className="w-full bg-white border border-gray-300 focus:border-amber-500 rounded-2xl px-4 py-4 text-2xl font-bold text-center outline-none tabular-nums"
                   style={{ fontSize: "28px" }}
                 />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 text-xl font-bold">€</span>
+                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 text-xl font-bold">€</span>
               </div>
-              <p className="text-center text-xs text-gray-400">Déjalo en 0 si no quieres registrarlo</p>
+              <p className="text-center text-xs text-gray-500">Déjalo en 0 si no quieres registrarlo</p>
               <button
                 onClick={() => {
                   iniciarTurno(turnoSeleccionado, parseFloat(cajaInicioPendiente) || 0);
@@ -1874,7 +1888,7 @@ export default function Page() {
               </button>
               <button
                 onClick={() => { setTurnoSeleccionado(null); setCajaInicioPendiente(""); }}
-                className="w-full py-3 rounded-2xl text-gray-400 text-sm touch-manipulation"
+                className="w-full py-3 rounded-2xl text-gray-500 text-sm touch-manipulation"
               >
                 Volver
               </button>

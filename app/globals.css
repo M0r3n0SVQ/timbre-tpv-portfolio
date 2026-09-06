@@ -40,3 +40,17 @@ body {
 .scrollbar-none::-webkit-scrollbar {
   display: none;
 }
+
+/* ── Bottom sheet entrance ───────────────────────── */
+@keyframes sheet-in {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.animate-sheet-in {
+  animation: sheet-in 0.18s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-sheet-in {
+    animation: none;
+  }
+}

@@ -18,7 +18,7 @@ export default function NumPad({ value, onChange }: Props) {
         <button
           key={i}
           onClick={() => pulsar(d)}
-          className="py-4 bg-gray-100 active:bg-gray-600 rounded-xl font-semibold text-xl touch-manipulation"
+          className="py-4 bg-gray-100 active:bg-gray-200 rounded-xl font-semibold text-xl touch-manipulation"
         >
           {d}
         </button>
