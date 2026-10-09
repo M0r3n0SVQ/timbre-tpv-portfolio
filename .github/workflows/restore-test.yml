@@ -1,0 +1,65 @@
+name: Prueba de restauración
+
+# Un backup que nunca se ha restaurado no es un backup. Cada semana se
+# restaura el último en un PostgreSQL vacío y se comprueba que no falta nada.
+on:
+  schedule:
+    - cron: "30 3 * * 1" # lunes, 30 min después del backup diario
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # para descargar el artifact de otro workflow
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: restore
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DESTINO: postgresql://postgres:restore@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar age
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq age
+
+      - name: Descargar el último backup correcto
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list --workflow backup.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -z "$run_id" ]; then echo "::error::No hay ningún backup correcto que restaurar"; exit 1; fi
+          gh run download "$run_id" --dir descarga
+          echo "BACKUP=$(ls descarga/*/*.dump.age | head -1)" >> "$GITHUB_ENV"
+          echo "MANIFEST=$(ls descarga/*/manifest.json | head -1)" >> "$GITHUB_ENV"
+          echo "Restaurando el backup de la ejecución $run_id"
+
+      - name: Preparar el destino (roles de Supabase)
+        run: docker run --rm -i --network host postgres:17 psql "$DESTINO" -v ON_ERROR_STOP=1 -f - < scripts/backup/prepare-target.sql
+
+      - name: Restaurar
+        env:
+          AGE_SECRET_KEY: ${{ secrets.AGE_SECRET_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$AGE_SECRET_KEY" > clave-age.txt
+          inicio=$(date +%s)
+          AGE_KEY_FILE=clave-age.txt bash scripts/backup/restore.sh "$BACKUP" "$DESTINO"
+          echo "DURACION=$(( $(date +%s) - inicio ))" >> "$GITHUB_ENV"
+          rm -f clave-age.txt
+
+      - name: Verificar
+        run: |
+          pg() { docker run --rm -i --network host postgres:17 "$@"; }
+          pg psql "$DESTINO" -AtX -v ON_ERROR_STOP=1 -f - < scripts/backup/conteo.sql > restaurado.json
+          pg psql "$DESTINO" -AtX -v ON_ERROR_STOP=1 -f - < scripts/backup/seguridad.sql > seguridad.json
+          echo "Restauración completada en ${DURACION}s" >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/backup/verify.py "$MANIFEST" restaurado.json seguridad.json

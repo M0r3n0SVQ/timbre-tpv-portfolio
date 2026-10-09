@@ -1,0 +1,57 @@
+name: Backup de la base de datos
+
+on:
+  schedule:
+    # 03:00 UTC = 05:00 en Madrid en verano, 04:00 en invierno: con el bar
+    # cerrado y antes de que empiece el "día de bar" a las 6:00.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar age
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq age
+
+      - name: Volcado cifrado
+        env:
+          # Cadena de conexión del Session pooler de Supabase (IPv4; la
+          # conexión directa solo funciona por IPv6, que los runners no tienen).
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          # Clave PÚBLICA de age: este job puede cifrar pero no descifrar.
+          AGE_RECIPIENT: ${{ vars.AGE_RECIPIENT }}
+        run: bash scripts/backup/backup.sh salida
+
+      - name: Fecha del backup
+        id: fecha
+        run: echo "valor=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backup-${{ steps.fecha.outputs.valor }}-${{ github.run_id }}
+          path: salida/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Resumen
+        run: |
+          {
+            echo "## Backup del ${{ steps.fecha.outputs.valor }}"
+            echo
+            echo "| Archivo | Tamaño |"
+            echo "|---|---|"
+            for f in salida/*; do echo "| \`$(basename "$f")\` | $(du -h "$f" | cut -f1) |"; done
+            echo
+            echo "Filas por tabla: \`$(cat salida/manifest.json)\`"
+          } >> "$GITHUB_STEP_SUMMARY"

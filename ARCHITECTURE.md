@@ -146,7 +146,7 @@ Checklist de la compra compartida entre dispositivos. Una única fila con `id = 
 ### `backups`
 Instantánea automática de `cuentas` + `cobros` del día, restaurable desde el Historial. Una única fila con `id = "ultimo"`, sobrescrita con debounce de 8 s. Restaurar usa `upsert` por `id` en `cobros`, así que restaurar dos veces no duplica cobros.
 
-> Esto protege frente a errores de uso (borrar una cuenta por accidente), **no** es un backup de la base de datos: vive en la misma BD. Los backups externos con restauración probada están en el roadmap.
+> Esto protege frente a errores de uso (borrar una cuenta por accidente), **no** es un backup de la base de datos: vive en la misma BD. Los backups reales son volcados diarios cifrados fuera de Supabase, con prueba de restauración semanal: ver [docs/backups.md](./docs/backups.md).
 
 ---
 

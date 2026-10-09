@@ -44,5 +44,11 @@ next-env.d.ts
 # volcados de base de datos (nunca deben subirse)
 *.dump
 *.sql.gz
-*.sql.gz.age
+*.age
 /backups/
+/salida/
+/descarga/
+
+# claves privadas de age (cifrado de backups)
+*.key
+clave-age*.txt

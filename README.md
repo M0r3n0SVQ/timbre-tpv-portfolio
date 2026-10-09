@@ -51,7 +51,9 @@ hooks/                Un hook por dominio: cuentas, cobros, sesión, cocina
 lib/                  Lógica pura y testeada + cliente de Supabase
 supabase/schema.sql   Esquema de la base de datos
 supabase/migrations/  Migraciones, cada una documentada
-.github/workflows/    Pipeline de CI
+.github/workflows/    CI, backup diario y prueba de restauración
+scripts/backup/       Backup, restauración y verificación (los usan los workflows y el runbook)
+docs/                 Runbooks: activar RLS, backups y restauración
 ```
 
 ## Ejecutar en local
@@ -99,6 +101,7 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 ## Calidad y operaciones
 
 - **CI:** GitHub Actions ejecuta auditoría de dependencias, lint, tests y build en cada push y pull request. Una vulnerabilidad alta o crítica en dependencias de producción bloquea el pipeline.
+- **Backups:** volcado diario cifrado de la base de datos con GitHub Actions y **prueba de restauración automática semanal** en un PostgreSQL vacío, que comprueba tablas, número de filas y RLS. Ver [docs/backups.md](./docs/backups.md).
 - **Dependencias:** Dependabot propone cada semana las actualizaciones (npm y GitHub Actions) como PRs que valida el CI.
 - **Tests:** la lógica crítica (identidad de platos, cálculo de cocina) está extraída a `lib/` y cubierta con tests, a raíz de un [incidente real en producción](./ARCHITECTURE.md#incidente-platos-homónimos-entre-categorías).
 - **Seguridad:** autenticación de Supabase y Row Level Security en todas las tablas; sin sesión, la clave pública no da acceso a ningún dato. Una sola contraseña por dispositivo, que se queda guardada y se renueva sola para no interrumpir el servicio.
@@ -106,7 +109,7 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 ### Roadmap
 
 - [x] Autenticación y Row Level Security en todas las tablas
-- [ ] Backups automáticos de la base de datos con restauración probada
+- [x] Backups automáticos de la base de datos con restauración probada
 - [ ] Monitorización de disponibilidad y errores con alertas
 - [ ] Runbook de incidencias
 
