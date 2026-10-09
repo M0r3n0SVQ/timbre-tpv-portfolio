@@ -1,0 +1,25 @@
+# Dependabot abre PRs con actualizaciones; el CI las valida antes de fusionar.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # Parches y versiones menores juntos en un solo PR semanal, para no
+      # recibir uno por paquete. Las mayores llegan por separado porque
+      # pueden romper cosas y hay que revisarlas una a una.
+      menores-y-parches:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "ci"
