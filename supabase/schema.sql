@@ -1,3 +1,10 @@
+-- Esquema completo para una instalación desde cero.
+--
+-- Todas las tablas tienen RLS: solo un usuario autenticado (la cuenta del
+-- bar) puede leer o escribir. Antes de usar la app, en el Dashboard:
+--   Authentication → Users → Add user (la cuenta del bar)
+--   Authentication → Sign In / Providers → desactivar "Allow new users to sign up"
+
 -- Cuentas abiertas (en curso)
 CREATE TABLE cuentas (
   id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -14,7 +21,9 @@ CREATE TABLE cuentas (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE cuentas DISABLE ROW LEVEL SECURITY;
+ALTER TABLE cuentas ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE cuentas FROM anon;
+CREATE POLICY "solo el bar autenticado" ON cuentas FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- Cobros realizados (histórico)
 CREATE TABLE cobros (
@@ -27,7 +36,9 @@ CREATE TABLE cobros (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE cobros DISABLE ROW LEVEL SECURITY;
+ALTER TABLE cobros ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE cobros FROM anon;
+CREATE POLICY "solo el bar autenticado" ON cobros FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- Sesión activa (turno en curso, compartida entre dispositivos)
 CREATE TABLE sesiones (
@@ -39,7 +50,9 @@ CREATE TABLE sesiones (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE sesiones DISABLE ROW LEVEL SECURITY;
+ALTER TABLE sesiones ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE sesiones FROM anon;
+CREATE POLICY "solo el bar autenticado" ON sesiones FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- Ítems de cocina ya servidos (para la pantalla de cocina)
 CREATE TABLE comandas_servidas (
@@ -55,7 +68,9 @@ CREATE TABLE comandas_servidas (
   PRIMARY KEY (cuenta_id, item_nombre, precio, categoria)
 );
 
-ALTER TABLE comandas_servidas DISABLE ROW LEVEL SECURITY;
+ALTER TABLE comandas_servidas ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE comandas_servidas FROM anon;
+CREATE POLICY "solo el bar autenticado" ON comandas_servidas FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- Lista de la compra compartida (una sola fila, id fijo "unica")
 CREATE TABLE lista_compra (
@@ -64,7 +79,9 @@ CREATE TABLE lista_compra (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE lista_compra DISABLE ROW LEVEL SECURITY;
+ALTER TABLE lista_compra ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE lista_compra FROM anon;
+CREATE POLICY "solo el bar autenticado" ON lista_compra FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
 -- Copia de seguridad automática del día (una sola fila, id fijo "ultimo")
 CREATE TABLE backups (
@@ -73,4 +90,6 @@ CREATE TABLE backups (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-ALTER TABLE backups DISABLE ROW LEVEL SECURITY;
+ALTER TABLE backups ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE backups FROM anon;
+CREATE POLICY "solo el bar autenticado" ON backups FOR ALL TO authenticated USING (true) WITH CHECK (true);

@@ -5,7 +5,9 @@ import { useCuentas } from "@/hooks/useCuentas";
 import { useCobros } from "@/hooks/useCobros";
 import { useSesion } from "@/hooks/useSesion";
 import { useComandas } from "@/hooks/useComandas";
+import { useAuth } from "@/hooks/useAuth";
 import NumPad from "@/components/NumPad";
+import PantallaLogin from "@/components/PantallaLogin";
 import BottomSheet from "@/components/BottomSheet";
 import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import { supabase } from "@/lib/supabase";
@@ -16,7 +18,24 @@ import type { Cobro, Cuenta, Item, MetodoPago } from "@/lib/types";
 type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
 type LineaParcial = { nombre: string; precio: number; categoria?: string; max: number; cobrar: number };
 
+// Puerta de entrada: sin sesión no se monta el TPV, así sus hooks no lanzan
+// consultas que RLS rechazaría. Con sesión, se monta una vez y ya no se
+// desmonta aunque el token se renueve.
 export default function Page() {
+  const { autenticado, iniciarSesion } = useAuth();
+
+  if (autenticado === undefined) {
+    return (
+      <div className="bg-gray-50 flex items-center justify-center" style={{ height: "100dvh" }}>
+        <div className="w-6 h-6 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+  if (!autenticado) return <PantallaLogin iniciarSesion={iniciarSesion} />;
+  return <TPV />;
+}
+
+function TPV() {
   const { cuentas, loading, error: errorCuentas, crearCuenta, actualizarCuenta, renombrarCuenta, eliminarCuenta, marcarPagada, abonarCuenta } = useCuentas();
   const { cobros, error: errorCobros, cobrarCuenta, actualizarMetodoPago, cerrarDia, restaurarCobros } = useCobros();
   const { sesion, loading: loadingSesion, error: errorSesion, iniciarTurno, cerrarTurno, actualizarCaja } = useSesion();

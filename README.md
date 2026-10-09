@@ -58,7 +58,10 @@ supabase/migrations/  Migraciones, cada una documentada
 
 Requisitos: Node.js 20+ y un proyecto de Supabase (el plan gratuito sirve).
 
-1. En el SQL Editor de Supabase, ejecuta [`supabase/schema.sql`](./supabase/schema.sql).
+1. En Supabase:
+   - SQL Editor: ejecuta [`supabase/schema.sql`](./supabase/schema.sql).
+   - Authentication → Users → *Add user*: crea la cuenta del bar.
+   - Authentication → Sign In / Providers: desactiva *Allow new users to sign up*.
 2. Copia las variables de entorno y rellénalas con los datos de tu proyecto:
 
    ```bash
@@ -80,6 +83,7 @@ Requisitos: Node.js 20+ y un proyecto de Supabase (el plan gratuito sirve).
 |---|---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto de Supabase | No |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Clave pública (*publishable* / `anon`) | No: va en el bundle del navegador por diseño; la protección la dan las políticas RLS |
+| `NEXT_PUBLIC_TPV_EMAIL` | Email de la cuenta del bar; la pantalla de login solo pide la contraseña | No |
 
 Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el frontend.
 
@@ -96,11 +100,12 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 
 - **CI:** GitHub Actions ejecuta lint, tests y build en cada push y pull request.
 - **Tests:** la lógica crítica (identidad de platos, cálculo de cocina) está extraída a `lib/` y cubierta con tests, a raíz de un [incidente real en producción](./ARCHITECTURE.md#incidente-platos-homónimos-entre-categorías).
+- **Seguridad:** autenticación de Supabase y Row Level Security en todas las tablas; sin sesión, la clave pública no da acceso a ningún dato. Una sola contraseña por dispositivo, que se queda guardada y se renueva sola para no interrumpir el servicio.
 - **Dependencias:** actualización de Next.js para cerrar 6 CVEs de severidad alta.
 
 ### Roadmap
 
-- [ ] Autenticación y Row Level Security en todas las tablas
+- [x] Autenticación y Row Level Security en todas las tablas
 - [ ] Backups automáticos de la base de datos con restauración probada
 - [ ] Monitorización de disponibilidad y errores con alertas
 - [ ] Runbook de incidencias
