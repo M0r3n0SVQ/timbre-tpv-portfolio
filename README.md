@@ -98,10 +98,10 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 
 ## Calidad y operaciones
 
-- **CI:** GitHub Actions ejecuta lint, tests y build en cada push y pull request.
+- **CI:** GitHub Actions ejecuta auditoría de dependencias, lint, tests y build en cada push y pull request. Una vulnerabilidad alta o crítica en dependencias de producción bloquea el pipeline.
+- **Dependencias:** Dependabot propone cada semana las actualizaciones (npm y GitHub Actions) como PRs que valida el CI.
 - **Tests:** la lógica crítica (identidad de platos, cálculo de cocina) está extraída a `lib/` y cubierta con tests, a raíz de un [incidente real en producción](./ARCHITECTURE.md#incidente-platos-homónimos-entre-categorías).
 - **Seguridad:** autenticación de Supabase y Row Level Security en todas las tablas; sin sesión, la clave pública no da acceso a ningún dato. Una sola contraseña por dispositivo, que se queda guardada y se renueva sola para no interrumpir el servicio.
-- **Dependencias:** actualización de Next.js para cerrar 6 CVEs de severidad alta.
 
 ### Roadmap
 

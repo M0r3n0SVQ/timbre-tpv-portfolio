@@ -261,7 +261,13 @@ npm test
 - `lib/itemIdentity.test.ts` — identidad de un plato dentro de una cuenta.
 - `lib/cocina.test.ts` — cálculo de pendientes de cocina, incluido el caso del incidente.
 
-GitHub Actions (`.github/workflows/ci.yml`) ejecuta `npm run lint`, `npm test` y `npm run build` (que incluye el chequeo de tipos) en cada push y PR a `main`.
+GitHub Actions (`.github/workflows/ci.yml`) se ejecuta en cada push y PR a `main`, con permisos de solo lectura:
+
+1. `npm audit --omit=dev --audit-level=high` — **bloqueante**: una vulnerabilidad alta o crítica en dependencias que llegan a producción para el pipeline.
+2. `npm audit --audit-level=high` — informativo para dependencias de desarrollo, que no se despliegan. Hoy reporta una cadena de `eslint-config-next` → `fast-glob` → `micromatch` → `braces` cuyo único arreglo propuesto por npm es bajar a Next 14; se acepta hasta que haya versión corregida.
+3. `npm run lint`, `npm test` y `npm run build` (que incluye el chequeo de tipos).
+
+Dependabot (`.github/dependabot.yml`) abre cada lunes un PR agrupado con las actualizaciones menores y de parche, y PRs separados para las mayores y para las GitHub Actions.
 
 ---
 
