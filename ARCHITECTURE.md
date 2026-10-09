@@ -13,6 +13,7 @@ TPV (Terminal Punto de Venta) web para **Cervecería El Timbre**. App móvil-fir
 | Estilos | Tailwind CSS v4 |
 | Base de datos | Supabase (PostgreSQL) |
 | Realtime | Supabase Realtime (`postgres_changes`) + polling |
+| Auth | Supabase Auth (email + contraseña) + RLS |
 | Tests | Vitest |
 | CI | GitHub Actions (lint, tests, build) |
 | Deploy | Vercel (auto-deploy en push a `main`) |
@@ -174,16 +175,25 @@ Cada dominio tiene su propio hook con el patrón **estado local → Supabase Rea
 | Publishable / `anon` key | El navegador | Los que permita RLS |
 | `service_role` / secret key | Solo un servidor de confianza | Total, ignora RLS |
 
-La clave pública va en el bundle de JavaScript por diseño: la seguridad no viene de ocultarla, sino de las políticas **RLS** (Row Level Security) de PostgreSQL. Este repositorio no contiene ninguna clave; se configuran como variables de entorno (ver `.env.example`).
+La clave pública va en el bundle de JavaScript por diseño: la seguridad no viene de ocultarla, sino de las políticas **RLS** (Row Level Security) de PostgreSQL. Este repositorio no contiene ninguna clave; se configuran como variables de entorno (ver `.env.example`). CORS no sirve como protección: solo lo aplican los navegadores y la Data API de Supabase no permite restringir orígenes.
 
-### Estado actual y limitación conocida
+### Autenticación y RLS
 
-La app no tiene autenticación y las tablas tienen **RLS desactivado**, por lo que la clave pública da lectura y escritura completas. Se aceptó al principio como riesgo de un uso interno con dos dispositivos, pero no es aceptable a medio plazo: cualquiera con la URL puede extraer la clave del bundle y llamar a la API directamente (CORS no protege, porque solo lo aplican los navegadores y la Data API de Supabase no permite restringir orígenes).
+Todas las tablas tienen **RLS activado** con una única política: solo el rol `authenticated` puede leer y escribir. Al rol `anon` además se le retiran los permisos de tabla, así que una petición con solo la clave pública falla con un error de permisos (ver [`supabase/migrations/2026-10-08-rls-autenticacion.sql`](./supabase/migrations/2026-10-08-rls-autenticacion.sql)).
 
-Plan de corrección (en curso):
-1. Autenticación de Supabase para los dispositivos del bar.
-2. `ENABLE ROW LEVEL SECURITY` en todas las tablas.
-3. Políticas que solo permitan acceso a usuarios `authenticated`.
+Hay **una sola cuenta del bar**, creada a mano en Supabase, y el registro público está desactivado (si no lo estuviera, cualquiera podría crearse una cuenta y pasar a ser `authenticated`).
+
+El diseño prioriza no interrumpir el servicio:
+
+- La pantalla de login solo pide la contraseña (el email viene de `NEXT_PUBLIC_TPV_EMAIL`) y se ve **una vez por dispositivo**.
+- `supabase-js` guarda la sesión en el dispositivo y renueva el token de acceso (1 h) automáticamente. Un fallo de red al renovar no cierra la sesión: solo se pierde si Supabase la rechaza de verdad (p. ej. si se borra la cuenta).
+- No hay botón de cerrar sesión, para que nadie la cierre sin querer en mitad del turno.
+- `useAuth` solo expone *si* hay sesión, no el objeto `Session`: la renovación del token no vuelve a montar la interfaz.
+- Si la sesión se pierde, no se pierde nada: cuentas, cobros y turno están en la base de datos y reaparecen al volver a entrar.
+
+Si la contraseña se filtra: se borra y se vuelve a crear la cuenta del bar con otra contraseña (eso revoca todas sus sesiones) y se inicia sesión de nuevo en los dispositivos del bar. Procedimiento completo en [`docs/runbook-activar-rls.md`](./docs/runbook-activar-rls.md).
+
+Historia: la primera versión no tenía autenticación y las tablas tenían RLS desactivado (riesgo aceptado mientras el uso era interno). Se corrigió desarrollando y probando el cambio contra un proyecto de Supabase de demo antes de aplicarlo a producción con el bar cerrado, con una migración de vuelta atrás preparada.
 
 ---
 
