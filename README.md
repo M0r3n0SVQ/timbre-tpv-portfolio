@@ -22,19 +22,27 @@ TPV (terminal punto de venta) web para **Cervecería El Timbre**, pensado para q
 ```mermaid
 flowchart LR
     M["📱 Móviles de los camareros<br/>(PWA · Next.js en el navegador)"]
-    V["▲ Vercel<br/>build + CDN"]
-    S[("Supabase<br/>PostgreSQL · API REST · Realtime")]
-    G["GitHub Actions<br/>lint · tests · build"]
+    V["▲ Vercel<br/>build + CDN + /api/health"]
+    S[("Supabase<br/>PostgreSQL + RLS · Auth · Realtime")]
+    G["GitHub Actions<br/>CI · backup diario · prueba de restauración"]
+    A[("Artifacts<br/>backups cifrados (age)")]
+    U["UptimeRobot<br/>cada 5 min"]
+    H["Healthchecks.io<br/>dead man's switch"]
 
-    G -. push / PR .-> V
+    G -. push a main .-> V
     V -- HTML/JS --> M
-    M -- "HTTPS (REST)" --> S
-    S -- "WebSocket (cambios en tiempo real)" --> M
+    M -- "HTTPS (REST) con sesión" --> S
+    S -- "WebSocket (tiempo real)" --> M
+    G -- "pg_dump" --> S
+    G --> A
+    U -- "GET /api/health" --> V
+    V -- "comprueba" --> S
+    G -- "ping" --> H
 ```
 
-- **Sin backend propio:** el navegador habla directamente con Supabase mediante `@supabase/supabase-js`.
+- **Sin backend propio para los datos:** el navegador habla directamente con Supabase mediante `@supabase/supabase-js`, y RLS decide qué puede hacer. El único código de servidor es el health check (`/api/health`).
 - **Sincronización en dos capas:** Supabase Realtime para cambios inmediatos y polling de respaldo para garantizar que todos los dispositivos convergen.
-- **Despliegue continuo:** cada push a `main` pasa por CI y Vercel lo despliega automáticamente.
+- **Despliegue continuo:** Vercel despliega cada push a `main`; GitHub Actions ejecuta el CI en paralelo. Cuando el repositorio sea público, la protección de rama hará que solo llegue a `main` lo que pase el CI (en repos privados del plan gratuito no se aplica).
 
 Documentación técnica completa (esquema, decisiones de diseño, seguridad e incidentes): **[ARCHITECTURE.md](./ARCHITECTURE.md)**.
 
@@ -107,13 +115,22 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 - **Tests:** la lógica crítica (identidad de platos, cálculo de cocina) está extraída a `lib/` y cubierta con tests, a raíz de un [incidente real en producción](./ARCHITECTURE.md#incidente-platos-homónimos-entre-categorías).
 - **Seguridad:** autenticación de Supabase y Row Level Security en todas las tablas; sin sesión, la clave pública no da acceso a ningún dato. Una sola contraseña por dispositivo, que se queda guardada y se renueva sola para no interrumpir el servicio.
 
+### Operación
+
+| Documento | Para qué |
+|---|---|
+| [Runbook de incidencias](./docs/runbook-incidencias.md) | Qué hacer cuando salta cada alerta: prioridades, diagnóstico y solución |
+| [Backups](./docs/backups.md) | Cómo funcionan, RPO, y cómo restaurar después de perder la base de datos |
+| [Monitorización](./docs/monitorizacion.md) | Qué se vigila, umbrales y configuración de alertas |
+| [Activar RLS en producción](./docs/runbook-activar-rls.md) | Cambio planificado con verificación y vuelta atrás |
+
 ### Roadmap
 
 - [x] Autenticación y Row Level Security en todas las tablas
 - [x] Backups automáticos de la base de datos con restauración probada
 - [x] Monitorización de disponibilidad con alertas
 - [ ] Seguimiento de errores del navegador (Sentry)
-- [ ] Runbook de incidencias
+- [x] Runbook de incidencias
 
 ## Sobre el desarrollo
 

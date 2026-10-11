@@ -65,7 +65,7 @@ TPV (Terminal Punto de Venta) web para **Cervecería El Timbre**. App móvil-fir
 └─────────────────────────────────────────┘
 ```
 
-No hay backend propio: Vercel solo sirve el HTML/JS compilado y el navegador habla **directamente** con Supabase (API REST autogenerada por PostgREST + Realtime por WebSocket) usando `@supabase/supabase-js` y la clave pública (`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`). Las variables `NEXT_PUBLIC_*` se incrustan en el bundle durante el build, así que son públicas por diseño.
+No hay backend propio para los datos: Vercel sirve el HTML/JS compilado y el navegador habla **directamente** con Supabase (API REST autogenerada por PostgREST + Realtime por WebSocket) usando `@supabase/supabase-js` y la clave pública (`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`). Las variables `NEXT_PUBLIC_*` se incrustan en el bundle durante el build, así que son públicas por diseño.
 
 La app es una **SPA de una sola página** (`app/page.tsx`, componente cliente). No hay routing — todo el estado vive en React con `useState`. Los modales se superponen sobre la vista principal.
 
@@ -268,6 +268,19 @@ GitHub Actions (`.github/workflows/ci.yml`) se ejecuta en cada push y PR a `main
 3. `npm run lint`, `npm test` y `npm run build` (que incluye el chequeo de tipos).
 
 Dependabot (`.github/dependabot.yml`) abre cada lunes un PR agrupado con las actualizaciones menores y de parche, y PRs separados para las mayores y para las GitHub Actions.
+
+---
+
+## Operación
+
+| Pieza | Dónde | Detalle |
+|---|---|---|
+| Backups | `.github/workflows/backup.yml` | `pg_dump` diario cifrado con age, 30 días en artifacts. RPO 24 h |
+| Prueba de restauración | `.github/workflows/restore-test.yml` | Semanal: restaura en PostgreSQL 17 vacío y verifica tablas, filas y RLS |
+| Health check | `app/api/health/route.ts` | Auth de Supabase responde y la clave pública sigue sin acceso a datos |
+| Alertas | UptimeRobot + Healthchecks.io | Web/Supabase caídos; backups fallidos o que no se ejecutan |
+
+Procedimientos: [runbook de incidencias](./docs/runbook-incidencias.md), [backups y restauración](./docs/backups.md), [monitorización](./docs/monitorizacion.md).
 
 ---
 
