@@ -71,6 +71,8 @@ jobs:
 
       # Dead man's switch: Healthchecks.io avisa si este ping no llega a tiempo
       # (el workflow no se ejecutó) o si llega como /fail (se ejecutó y falló).
+      # Ojo: "cond && '' || '/fail'" siempre da '/fail' (la cadena vacía cuenta
+      # como falso en las expresiones de GitHub). Por eso el valor vacío va al final.
       - name: Avisar a Healthchecks (resultado)
         if: always() && env.HC_URL != ''
-        run: curl -fsS -m 10 --retry 3 "$HC_URL${{ job.status == 'success' && '' || '/fail' }}" > /dev/null
+        run: curl -fsS -m 10 --retry 3 "$HC_URL${{ job.status != 'success' && '/fail' || '' }}" > /dev/null
