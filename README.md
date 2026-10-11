@@ -8,6 +8,12 @@ TPV (terminal punto de venta) web para **Cervecería El Timbre**, pensado para q
 > **En producción en un negocio real** desde mayo de 2026, usado a diario en cada servicio.
 > Este es el repositorio público del proyecto. El despliegue de producción vive en un repositorio privado para no exponer su infraestructura, configuración ni datos.
 
+## Demo en vivo
+
+**<https://timbre-tpv-portfolio.vercel.app>** — contraseña: `demotimbre`
+
+Funciona contra un proyecto de Supabase de demostración, separado del de producción y con datos inventados: puedes abrir turnos, crear cuentas, cobrar y ver la pantalla de cocina. Ábrela en dos pestañas o en el móvil para ver la sincronización en tiempo real. La contraseña es pública a propósito; la de producción es otra.
+
 ## Qué hace
 
 - Cuentas simultáneas por mesa o cliente: añadir productos, juntar cuentas, renombrar, borrar.
