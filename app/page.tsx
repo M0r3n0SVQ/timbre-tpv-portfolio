@@ -186,8 +186,15 @@ function TPV() {
     } catch { return null; }
   });
   const backupTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ultimoContenidoBackup = useRef("");
   useEffect(() => {
     if (loading) return;
+    // El polling (cada 5s) devuelve arrays nuevos aunque los datos no hayan
+    // cambiado. Sin esta comparación, cada poll reiniciaba el debounce de 8s
+    // y la copia en Supabase no llegaba a escribirse nunca con la app abierta.
+    const contenido = JSON.stringify({ cuentas, cobros });
+    if (contenido === ultimoContenidoBackup.current) return;
+    ultimoContenidoBackup.current = contenido;
     const ts = new Date().toISOString();
     const datos = { cuentas, cobros, timestamp: ts };
     // localStorage: inmediato
@@ -198,7 +205,9 @@ function TPV() {
     // Supabase: debounce 8s para no saturar
     if (backupTimer.current) clearTimeout(backupTimer.current);
     backupTimer.current = setTimeout(() => {
-      supabase.from("backups").upsert({ id: "ultimo", datos, updated_at: new Date().toISOString() }).then(() => {});
+      supabase.from("backups").upsert({ id: "ultimo", datos, updated_at: new Date().toISOString() }).then(({ error }) => {
+        if (error) console.error("No se pudo guardar la copia del día en Supabase:", error.message);
+      });
     }, 8000);
   }, [cuentas, cobros, loading]);
 
