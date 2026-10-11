@@ -2,7 +2,7 @@
 
 | Qué se vigila | Cómo | Cada cuánto | Alerta si |
 |---|---|---|---|
-| La web carga y Supabase responde | UptimeRobot → `GET /api/health` | 5 min | 2 fallos seguidos (HTTP ≠ 200 o sin respuesta en 30 s) |
+| La web carga y Supabase responde | UptimeRobot → `GET /api/health` | 5 min | La URL no responde o devuelve un código distinto de 200 |
 | El backup nocturno se ejecuta y termina bien | Healthchecks.io (*dead man's switch*) | Diario | No llega el ping en 25 h, o llega como `/fail` |
 | La prueba de restauración se ejecuta y termina bien | Healthchecks.io | Semanal | No llega el ping en 7 días + 12 h, o llega como `/fail` |
 
