@@ -1,8 +1,6 @@
 import { comprobarSupabase } from "@/lib/health";
 
-// Health check para el monitor de disponibilidad (UptimeRobot). Responde 200
-// si Supabase está levantado y la base de datos sigue protegida, 503 si no.
-// Se ejecuta en cada petición: un resultado cacheado no serviría de nada.
+// Lo consulta UptimeRobot. 200 si todo va bien, 503 si algo falla. Sin caché.
 export const dynamic = "force-dynamic";
 
 export async function GET() {

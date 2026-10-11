@@ -18,9 +18,7 @@ import type { Cobro, Cuenta, Item, MetodoPago } from "@/lib/types";
 type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
 type LineaParcial = { nombre: string; precio: number; categoria?: string; max: number; cobrar: number };
 
-// Puerta de entrada: sin sesión no se monta el TPV, así sus hooks no lanzan
-// consultas que RLS rechazaría. Con sesión, se monta una vez y ya no se
-// desmonta aunque el token se renueve.
+// Sin sesión no monto el TPV (sus hooks harían consultas que RLS rechaza)
 export default function Page() {
   const { autenticado, iniciarSesion } = useAuth();
 
@@ -189,9 +187,8 @@ function TPV() {
   const ultimoContenidoBackup = useRef("");
   useEffect(() => {
     if (loading) return;
-    // El polling (cada 5s) devuelve arrays nuevos aunque los datos no hayan
-    // cambiado. Sin esta comparación, cada poll reiniciaba el debounce de 8s
-    // y la copia en Supabase no llegaba a escribirse nunca con la app abierta.
+    // El polling trae arrays nuevos aunque no cambie nada y eso reiniciaba el
+    // debounce, así que la copia nunca llegaba a Supabase. Comparo el contenido.
     const contenido = JSON.stringify({ cuentas, cobros });
     if (contenido === ultimoContenidoBackup.current) return;
     ultimoContenidoBackup.current = contenido;

@@ -2,8 +2,7 @@ name: Backup de la base de datos
 
 on:
   schedule:
-    # 03:00 UTC = 05:00 en Madrid en verano, 04:00 en invierno: con el bar
-    # cerrado y antes de que empiece el "día de bar" a las 6:00.
+    # 5:00 en Madrid (4:00 en invierno), con el bar cerrado
     - cron: "0 3 * * *"
   workflow_dispatch:
 
@@ -32,10 +31,9 @@ jobs:
 
       - name: Volcado cifrado
         env:
-          # Cadena de conexión del Session pooler de Supabase (IPv4; la
-          # conexión directa solo funciona por IPv6, que los runners no tienen).
+          # Session pooler: la conexión directa es solo IPv6 y los runners no tienen
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          # Clave PÚBLICA de age: este job puede cifrar pero no descifrar.
+          # clave pública: este job cifra pero no puede descifrar
           AGE_RECIPIENT: ${{ vars.AGE_RECIPIENT }}
         run: bash scripts/backup/backup.sh salida
 
@@ -62,10 +60,7 @@ jobs:
             echo "Filas por tabla: \`$(cat salida/manifest.json)\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Dead man's switch: Healthchecks.io avisa si este ping no llega a tiempo
-      # (el workflow no se ejecutó) o si llega como /fail (se ejecutó y falló).
-      # Ojo: "cond && '' || '/fail'" siempre da '/fail' (la cadena vacía cuenta
-      # como falso en las expresiones de GitHub). Por eso el valor vacío va al final.
+      # ojo: con "== 'success' && '' || '/fail'" siempre sale /fail ('' cuenta como falso)
       - name: Avisar a Healthchecks (resultado)
         if: always() && env.HC_URL != ''
         run: curl -fsS -m 10 --retry 3 "$HC_URL${{ job.status != 'success' && '/fail' || '' }}" > /dev/null

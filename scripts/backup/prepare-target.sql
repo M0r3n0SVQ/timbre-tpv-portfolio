@@ -1,8 +1,5 @@
--- Prepara un PostgreSQL vacío (no Supabase) para recibir un backup: crea
--- los roles de Supabase a los que hacen referencia las políticas RLS y los
--- permisos del volcado. Sin ellos, pg_restore falla en el primer GRANT.
---
--- No hace falta en un proyecto de Supabase: esos roles ya existen.
+-- Crea los roles de Supabase en un PostgreSQL normal para poder restaurar ahí
+-- (si no, falla en el primer GRANT). En Supabase no hace falta.
 do $$
 declare
   r text;

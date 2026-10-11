@@ -1,14 +1,7 @@
 #!/usr/bin/env bash
-# Hace un backup cifrado del esquema public de la base de datos.
-#
-# Uso:
-#   SUPABASE_DB_URL=postgresql://...  AGE_RECIPIENT=age1...  scripts/backup/backup.sh <dir_salida>
-#
-# Deja en <dir_salida>:
-#   timbre-<fecha>.dump.age   volcado (pg_dump formato custom) cifrado con age
-#   manifest.json             filas por tabla en el momento del backup (no sensible)
-#
-# Requiere docker (usa la imagen postgres:17 para pg_dump/psql) y age.
+# Backup cifrado del esquema public. Necesita docker y age.
+# Uso: SUPABASE_DB_URL=... AGE_RECIPIENT=age1... scripts/backup/backup.sh <dir_salida>
+# Deja el volcado cifrado (.dump.age) y manifest.json con las filas por tabla.
 set -euo pipefail
 
 : "${SUPABASE_DB_URL:?Falta SUPABASE_DB_URL}"
@@ -22,9 +15,7 @@ archivo="$out/timbre-$fecha.dump.age"
 
 pg() { docker run --rm -i --network host postgres:17 "$@"; }
 
-# Tablas, datos, RLS, políticas y permisos del esquema public. Va directo de
-# pg_dump a age por una tubería: el volcado nunca se escribe en claro en disco.
-# Con pipefail, si pg_dump falla a medias el script falla aunque age termine.
+# De pg_dump a age directamente, sin escribir nada en claro en disco
 pg pg_dump "$SUPABASE_DB_URL" --schema=public --format=custom --no-owner \
   | age --encrypt --recipient "$AGE_RECIPIENT" > "$archivo"
 

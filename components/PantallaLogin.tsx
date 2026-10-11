@@ -4,9 +4,7 @@ import { useState } from "react";
 
 type Props = { iniciarSesion: (password: string) => Promise<string | null> };
 
-// Se ve una sola vez por dispositivo: después la sesión queda guardada y se
-// renueva sola. No hay botón de cerrar sesión a propósito, para que nadie la
-// cierre sin querer en mitad del turno.
+// Solo sale la primera vez en cada móvil. No hay botón de cerrar sesión a propósito.
 export default function PantallaLogin({ iniciarSesion }: Props) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);

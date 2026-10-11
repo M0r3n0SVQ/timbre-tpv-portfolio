@@ -3,7 +3,7 @@ import { comprobarSupabase } from "./health";
 
 const URL_SB = "https://demo.supabase.co";
 
-// fetch falso: responde según la ruta pedida.
+// fetch falso que responde según la URL
 function fetchFalso(respuestas: { auth: () => Response | Promise<Response>; db: () => Response | Promise<Response> }) {
   return (async (input: RequestInfo | URL) => {
     const url = String(input);

@@ -1,9 +1,5 @@
--- Esquema completo para una instalación desde cero.
---
--- Todas las tablas tienen RLS: solo un usuario autenticado (la cuenta del
--- bar) puede leer o escribir. Antes de usar la app, en el Dashboard:
---   Authentication → Users → Add user (la cuenta del bar)
---   Authentication → Sign In / Providers → desactivar "Allow new users to sign up"
+-- Esquema completo para instalar desde cero. Todas las tablas con RLS.
+-- Después: crear la cuenta del bar y desactivar el registro público en Authentication.
 
 -- Cuentas abiertas (en curso)
 CREATE TABLE cuentas (

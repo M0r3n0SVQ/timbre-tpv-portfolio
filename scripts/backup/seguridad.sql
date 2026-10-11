@@ -1,6 +1,4 @@
--- Por cada tabla de public: si tiene RLS activado y si el rol anon (la
--- clave pública) puede leerla. Tras restaurar, debe ser rls=true y
--- anon_lee=false en todas.
+-- Por tabla: si tiene RLS y si anon puede leerla. Debe ser rls=true, anon_lee=false.
 select coalesce(json_object_agg(c.relname, json_build_object(
   'rls', c.relrowsecurity,
   'anon_lee', has_table_privilege('anon', c.oid, 'select')

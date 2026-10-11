@@ -3,20 +3,15 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
-// undefined = todavía comprobando, false = sin sesión, true = con sesión.
-//
-// Solo se expone SI hay sesión, no el objeto Session: Supabase emite uno nuevo
-// cada vez que renueva el token (cada hora), y si la UI dependiera de él se
-// volvería a montar entera en mitad del turno.
+// undefined mientras carga. Devuelvo un boolean y no la Session porque esta
+// cambia en cada renovación del token y haría re-renderizar todo el TPV.
 export function useAuth() {
   const [autenticado, setAutenticado] = useState<boolean | undefined>(undefined);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setAutenticado(!!data.session));
 
-    // Un corte de red al renovar el token NO dispara SIGNED_OUT (supabase-js
-    // reintenta y conserva la sesión); solo se pierde si Supabase la rechaza
-    // de verdad, p. ej. porque se ha borrado la cuenta.
+    // Si falla la red al renovar, supabase-js reintenta y no cierra la sesión
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_evento, session) => {
       setAutenticado(!!session);
     });

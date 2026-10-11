@@ -1,7 +1,6 @@
 name: Prueba de restauración
 
-# Un backup que nunca se ha restaurado no es un backup. Cada semana se
-# restaura el último en un PostgreSQL vacío y se comprueba que no falta nada.
+# Restaura el último backup en un PostgreSQL vacío y comprueba que no falta nada
 on:
   schedule:
     - cron: "30 3 * * 1" # lunes, 30 min después del backup diario
@@ -69,10 +68,7 @@ jobs:
           echo "Restauración completada en ${DURACION}s" >> "$GITHUB_STEP_SUMMARY"
           python3 scripts/backup/verify.py "$MANIFEST" restaurado.json seguridad.json
 
-      # Dead man's switch: Healthchecks.io avisa si este ping no llega a tiempo
-      # (el workflow no se ejecutó) o si llega como /fail (se ejecutó y falló).
-      # Ojo: "cond && '' || '/fail'" siempre da '/fail' (la cadena vacía cuenta
-      # como falso en las expresiones de GitHub). Por eso el valor vacío va al final.
+      # ojo: con "== 'success' && '' || '/fail'" siempre sale /fail ('' cuenta como falso)
       - name: Avisar a Healthchecks (resultado)
         if: always() && env.HC_URL != ''
         run: curl -fsS -m 10 --retry 3 "$HC_URL${{ job.status != 'success' && '/fail' || '' }}" > /dev/null

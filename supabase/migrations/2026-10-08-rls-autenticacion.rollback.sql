@@ -1,9 +1,4 @@
--- Deshace 2026-10-08-rls-autenticacion.sql: vuelve a dejar las tablas
--- abiertas a la clave pública, como estaban antes.
---
--- Solo para emergencias (p. ej. la app no carga datos tras activar RLS y
--- hay que abrir el bar). Deja la base de datos expuesta otra vez: en cuanto
--- se resuelva el problema, vuelve a aplicar la migración.
+-- Deshace la migración de RLS. Solo para emergencias: deja la BD abierta otra vez.
 
 do $$
 declare

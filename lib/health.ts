@@ -1,5 +1,4 @@
-// Comprobaciones del health check (/api/health), separadas de la ruta para
-// poder testearlas sin red.
+// Lógica de /api/health, aparte para poder testearla sin red
 
 export type Comprobacion = { ok: boolean; ms: number; detalle: string };
 export type Salud = { ok: boolean; comprobaciones: Record<string, Comprobacion> };
@@ -33,14 +32,12 @@ export async function comprobarSupabase(
   const headers = { apikey: clavePublica };
 
   const [auth, baseDeDatos] = await Promise.all([
-    // El proyecto está levantado (un proyecto pausado o caído no responde 200).
+    // Si el proyecto está caído o pausado no devuelve 200
     medir(fetchFn, `${supabaseUrl}/auth/v1/health`, { headers }, timeoutMs, async (res) =>
       res.ok ? null : `HTTP ${res.status}`,
     ),
-    // Sin sesión, PostgreSQL debe rechazar la lectura por permisos (42501).
-    // Ese rechazo prueba que la base de datos responde y, a la vez, que la
-    // clave pública sigue sin acceso: si un día devolviera datos, RLS o los
-    // permisos se habrían roto y el health check falla.
+    // Sin sesión tiene que dar permission denied (42501): así compruebo que la BD
+    // responde y que RLS sigue bloqueando a la clave pública
     medir(fetchFn, `${supabaseUrl}/rest/v1/sesiones?select=id&limit=1`, { headers }, timeoutMs, async (res) => {
       if (res.ok) return "la clave pública puede leer datos: revisar RLS y permisos";
       const cuerpo = (await res.json().catch(() => null)) as { code?: string } | null;

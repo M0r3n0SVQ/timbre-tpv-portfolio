@@ -1,6 +1,4 @@
--- Filas por tabla del esquema public, como JSON. Se guarda junto a cada
--- backup (manifest.json) y se vuelve a calcular tras restaurarlo: si no
--- coinciden, la restauración ha perdido datos.
+-- Filas por tabla de public en JSON. Se compara antes y después de restaurar.
 select json_build_object(
   'tablas', coalesce(json_object_agg(table_name, filas order by table_name), '{}'::json)
 )

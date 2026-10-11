@@ -1,2 +1,2 @@
-# Los scripts de shell siempre con LF: con CRLF, bash falla al ejecutarlos.
+# con CRLF los .sh fallan en bash
 *.sh text eol=lf

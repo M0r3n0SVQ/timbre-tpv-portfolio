@@ -1,13 +1,6 @@
-"""Comprueba que una base de datos restaurada coincide con el manifiesto del backup.
+"""Compara lo restaurado con el manifiesto del backup. Sale con 1 si algo no cuadra.
 
 Uso: python3 scripts/backup/verify.py <manifest.json> <restaurado.json> <seguridad.json>
-
-- restaurado.json: salida de conteo.sql ejecutado sobre la base restaurada.
-- seguridad.json:  salida de seguridad.sql (RLS y acceso de anon por tabla).
-
-Sale con código 1 si falta alguna tabla, si cambia el número de filas, si
-alguna tabla no tiene RLS o si anon puede leerla. Escribe un resumen en
-Markdown en $GITHUB_STEP_SUMMARY cuando existe (GitHub Actions).
 """
 
 import json
@@ -16,7 +9,7 @@ import sys
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")  # emojis también en la consola de Windows
+    sys.stdout.reconfigure(encoding="utf-8")  # para los emojis en Windows
     manifest_path, restaurado_path, seguridad_path = sys.argv[1:4]
     esperado = json.load(open(manifest_path, encoding="utf-8"))["tablas"]
     obtenido = json.load(open(restaurado_path, encoding="utf-8"))["tablas"]
