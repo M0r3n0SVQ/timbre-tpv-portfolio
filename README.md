@@ -53,7 +53,7 @@ supabase/schema.sql   Esquema de la base de datos
 supabase/migrations/  Migraciones, cada una documentada
 .github/workflows/    CI, backup diario y prueba de restauración
 scripts/backup/       Backup, restauración y verificación (los usan los workflows y el runbook)
-docs/                 Runbooks: activar RLS, backups y restauración
+docs/                 Runbooks y operación: RLS, backups, monitorización
 ```
 
 ## Ejecutar en local
@@ -102,6 +102,7 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 
 - **CI:** GitHub Actions ejecuta auditoría de dependencias, lint, tests y build en cada push y pull request. Una vulnerabilidad alta o crítica en dependencias de producción bloquea el pipeline.
 - **Backups:** volcado diario cifrado de la base de datos con GitHub Actions y **prueba de restauración automática semanal** en un PostgreSQL vacío, que comprueba tablas, número de filas y RLS. Ver [docs/backups.md](./docs/backups.md).
+- **Monitorización:** endpoint `/api/health` que comprueba que Supabase responde y que la base de datos sigue protegida, vigilado cada 5 minutos con UptimeRobot; los backups avisan a Healthchecks.io, que alerta si fallan o si no llegan a ejecutarse. Ver [docs/monitorizacion.md](./docs/monitorizacion.md).
 - **Dependencias:** Dependabot propone cada semana las actualizaciones (npm y GitHub Actions) como PRs que valida el CI.
 - **Tests:** la lógica crítica (identidad de platos, cálculo de cocina) está extraída a `lib/` y cubierta con tests, a raíz de un [incidente real en producción](./ARCHITECTURE.md#incidente-platos-homónimos-entre-categorías).
 - **Seguridad:** autenticación de Supabase y Row Level Security en todas las tablas; sin sesión, la clave pública no da acceso a ningún dato. Una sola contraseña por dispositivo, que se queda guardada y se renueva sola para no interrumpir el servicio.
@@ -110,7 +111,8 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 
 - [x] Autenticación y Row Level Security en todas las tablas
 - [x] Backups automáticos de la base de datos con restauración probada
-- [ ] Monitorización de disponibilidad y errores con alertas
+- [x] Monitorización de disponibilidad con alertas
+- [ ] Seguimiento de errores del navegador (Sentry)
 - [ ] Runbook de incidencias
 
 ## Sobre el desarrollo
