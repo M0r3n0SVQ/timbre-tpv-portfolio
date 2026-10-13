@@ -5,7 +5,7 @@
 
 TPV (terminal punto de venta) web para **Cervecería El Timbre**, pensado para que varios camareros trabajen a la vez desde el móvil, con sincronización en tiempo real entre dispositivos y una pantalla de cocina.
 
-> **En producción en un negocio real** desde mayo de 2026, usado a diario en cada servicio.
+> **En producción en un negocio real** desde mayo de 2026, usado a diario en cada servicio: 226 turnos abiertos y, desde julio, más de 1.700 cuentas cobradas con 8.600 artículos. Lo que más sale es la cortada (4.851).
 > Este es el repositorio público del proyecto. El despliegue de producción vive en un repositorio privado para no exponer su infraestructura, configuración ni datos.
 
 ## Demo en vivo
