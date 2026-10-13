@@ -56,6 +56,5 @@ Si los secrets `HEALTHCHECKS_BACKUP_URL` / `HEALTHCHECKS_RESTORE_URL` no están 
 
 ## Producción
 
-- `/api/health` llega a producción con el mismo cambio que activa RLS (ver [runbook](./runbook-activar-rls.md)). Antes no tendría sentido: con RLS desactivado, la comprobación `baseDeDatos` fallaría siempre, que es justo lo que debe hacer.
-- Mientras tanto, UptimeRobot puede vigilar la página principal de producción (`GET /`) para saber al menos si la web carga.
+- UptimeRobot vigila `/api/health` de producción desde el 14-10-2026, cuando se activó RLS ([runbook](./runbook-activar-rls.md)). Antes vigilaba solo `/`: sin RLS, `baseDeDatos` habría fallado siempre.
 - Los checks de Healthchecks.io de producción son aparte (`timbre-prod-backup`, `timbre-prod-restore-test`), con sus secrets en el repositorio privado.

@@ -5,6 +5,7 @@ Cambio: la app pasa a pedir la contraseña del bar (una vez por dispositivo) y l
 - **Cuándo:** con el bar cerrado. Hay que tener a mano todos los móviles/tablets que usan el TPV.
 - **Duración estimada:** 20–30 min.
 - **Requisito:** el mismo procedimiento ya probado en el proyecto de demo.
+- **Aplicado:** 14-10-2026, sin cortes. Ver [lo que salió](#lo-que-salió-al-aplicarlo) al final.
 
 ## 0. Antes de empezar
 
@@ -57,3 +58,13 @@ La vuelta atrás deja la base de datos expuesta otra vez: es un parche temporal,
 
 1. Authentication → Users → cuenta del bar → **Delete user**, y crearla de nuevo (mismo email) con otra contraseña. Borrar el usuario revoca todas sus sesiones; en como mucho 1 h (lo que dura un token de acceso) nadie con la contraseña antigua tiene acceso.
 2. Volver a entrar en cada dispositivo del bar con la nueva.
+
+## Lo que salió al aplicarlo
+
+El primer backup de producción, hecho justo después, listó una tabla `cierres` que no estaba en la migración, así que no tenía la política nueva ni el `revoke` a `anon`. La app no la usaba en ningún sitio. La borré (seguía en el backup por si acaso) y la prueba de restauración salió con todas las tablas protegidas.
+
+La lista de tablas de la migración salió del código, no de la base de datos. La próxima vez, mirar antes qué hay de verdad:
+
+```sql
+select tablename, rowsecurity from pg_tables where schemaname = 'public';
+```

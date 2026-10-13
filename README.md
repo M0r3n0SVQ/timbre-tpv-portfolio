@@ -128,7 +128,7 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 | [Runbook de incidencias](./docs/runbook-incidencias.md) | Qué hacer cuando salta cada alerta: prioridades, diagnóstico y solución |
 | [Backups](./docs/backups.md) | Cómo funcionan, RPO, y cómo restaurar después de perder la base de datos |
 | [Monitorización](./docs/monitorizacion.md) | Qué se vigila, umbrales y configuración de alertas |
-| [Activar RLS en producción](./docs/runbook-activar-rls.md) | Cambio planificado con verificación y vuelta atrás |
+| [Activar RLS en producción](./docs/runbook-activar-rls.md) | Pasos, verificación y vuelta atrás. Aplicado el 14-10-2026 |
 
 ### Roadmap
 
