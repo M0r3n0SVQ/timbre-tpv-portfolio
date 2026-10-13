@@ -30,7 +30,7 @@ jobs:
         if: env.HC_URL != ''
         run: curl -fsS -m 10 --retry 3 "$HC_URL/start" > /dev/null
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Instalar age
         run: sudo apt-get update -qq && sudo apt-get install -y -qq age
