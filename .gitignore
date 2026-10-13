@@ -52,3 +52,7 @@ next-env.d.ts
 # claves privadas de age (cifrado de backups)
 *.key
 clave-age*.txt
+
+# los regenera next dev
+AGENTS.md
+CLAUDE.md
