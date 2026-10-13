@@ -41,7 +41,7 @@ jobs:
         id: fecha
         run: echo "valor=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: backup-${{ steps.fecha.outputs.valor }}-${{ github.run_id }}
           path: salida/
