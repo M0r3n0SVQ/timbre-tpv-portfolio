@@ -237,7 +237,7 @@ function TPV() {
   const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const productosRapidosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoriaRapida).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const { total: totalDia, efectivo: totalEfectivoDia, tarjeta: totalTarjetaDia } = desglosePorMetodo(cobros);
-  const cambio = calcularCambio(efectivo, cuentaActiva?.total ?? 0);
+  const cambio = calcularCambio(efectivo, pendienteCuenta);
   const sinItems = (cuentaActiva?.items.length ?? 0) === 0;
   const totalRapido = totalLineas(itemsRapidos);
   const itemsCompraPendientes = listaCompra.filter((i) => !i.hecho).length;
@@ -1481,7 +1481,14 @@ function TPV() {
         <BottomSheet>
           <div className="p-6 flex flex-col gap-4">
             <h2 className="text-xl font-bold text-center">Dividir cuenta</h2>
-            <p className="text-center text-gray-500">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
+            {(cuentaActiva.cobrado_parcial ?? 0) > 0 ? (
+              <div className="text-center">
+                <p className="text-gray-500">Pendiente: <span className="text-gray-900 font-semibold">{pendienteCuenta.toFixed(2)}€</span></p>
+                <p className="text-xs text-gray-500">Total {cuentaActiva.total.toFixed(2)}€ · ya pagado {cuentaActiva.cobrado_parcial!.toFixed(2)}€</p>
+              </div>
+            ) : (
+              <p className="text-center text-gray-500">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
+            )}
             <div className="flex items-center justify-center gap-6 py-2">
               <button onClick={() => setPersonas((p) => Math.max(2, p - 1))} className="w-14 h-14 rounded-full bg-gray-200 active:bg-gray-300 text-2xl font-bold touch-manipulation">−</button>
               <span className="text-4xl font-bold w-12 text-center tabular-nums">{personas}</span>
@@ -1490,7 +1497,7 @@ function TPV() {
             <p className="text-center text-gray-500 text-sm">{personas} personas</p>
             <div className="bg-gray-100 rounded-2xl p-5 text-center">
               <p className="text-gray-500 text-sm mb-1 uppercase tracking-wider">Cada uno paga</p>
-              <p className="text-5xl font-bold text-amber-600 tabular-nums">{importePorPersona(cuentaActiva.total, personas).toFixed(2)}€</p>
+              <p className="text-5xl font-bold text-amber-600 tabular-nums">{importePorPersona(pendienteCuenta, personas).toFixed(2)}€</p>
             </div>
             <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cerrar</button>
           </div>
@@ -1502,7 +1509,14 @@ function TPV() {
         <BottomSheet>
           <div className="p-5 flex flex-col gap-3">
             <h2 className="text-xl font-bold text-center">Calcular cambio</h2>
-            <p className="text-center text-gray-500">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
+            {(cuentaActiva.cobrado_parcial ?? 0) > 0 ? (
+              <div className="text-center">
+                <p className="text-gray-500">Pendiente: <span className="text-gray-900 font-semibold">{pendienteCuenta.toFixed(2)}€</span></p>
+                <p className="text-xs text-gray-500">Total {cuentaActiva.total.toFixed(2)}€ · ya pagado {cuentaActiva.cobrado_parcial!.toFixed(2)}€</p>
+              </div>
+            ) : (
+              <p className="text-center text-gray-500">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
+            )}
             <div className="bg-gray-100 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">{efectivo || "0"}€</div>
             <NumPad value={efectivo} onChange={setEfectivo} />
             {parsearImporte(efectivo) > 0 && (
