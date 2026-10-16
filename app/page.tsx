@@ -13,10 +13,10 @@ import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import { supabase } from "@/lib/supabase";
 import { claveItem } from "@/lib/itemIdentity";
 import { CATS_COCINA, categoriaCocina, esItemCocina, tieneCocinaPendiente, pendienteDe } from "@/lib/cocina";
+import { calcularCambio, cubrePendiente, desglosePorMetodo, esImporteParcialValido, importePorPersona, itemsRestantes, parsearImporte, pendientePorCobrar, superaPendiente, totalLineas, totalSeleccion, type LineaParcial } from "@/lib/cobro";
 import type { Cobro, Cuenta, Item, MetodoPago } from "@/lib/types";
 
 type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
-type LineaParcial = { nombre: string; precio: number; categoria?: string; max: number; cobrar: number };
 
 // Sin sesión no monto el TPV (sus hooks harían consultas que RLS rechaza)
 export default function Page() {
@@ -233,15 +233,13 @@ function TPV() {
   const cuentaActiva = cuentas.find((c) => c.id === idActiva) ?? null;
   // Lo que queda por cobrar de la cuenta activa, descontando lo ya pagado
   // "a cuenta" por un importe suelto (cobro parcial por importe).
-  const pendienteCuenta = cuentaActiva ? Math.max(0, cuentaActiva.total - (cuentaActiva.cobrado_parcial ?? 0)) : 0;
+  const pendienteCuenta = cuentaActiva ? pendientePorCobrar(cuentaActiva.total, cuentaActiva.cobrado_parcial) : 0;
   const productosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoria).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const productosRapidosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoriaRapida).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
-  const totalDia = cobros.reduce((s, c) => s + Number(c.total), 0);
-  const totalEfectivoDia = cobros.filter((c) => c.metodo_pago !== "tarjeta").reduce((s, c) => s + Number(c.total), 0);
-  const totalTarjetaDia = cobros.filter((c) => c.metodo_pago === "tarjeta").reduce((s, c) => s + Number(c.total), 0);
-  const cambio = parseFloat(efectivo || "0") - (cuentaActiva?.total ?? 0);
+  const { total: totalDia, efectivo: totalEfectivoDia, tarjeta: totalTarjetaDia } = desglosePorMetodo(cobros);
+  const cambio = calcularCambio(efectivo, cuentaActiva?.total ?? 0);
   const sinItems = (cuentaActiva?.items.length ?? 0) === 0;
-  const totalRapido = itemsRapidos.reduce((s, i) => s + i.precio * i.cantidad, 0);
+  const totalRapido = totalLineas(itemsRapidos);
   const itemsCompraPendientes = listaCompra.filter((i) => !i.hecho).length;
   const cuentasParaJuntar = cuentas.filter((c) => c.id !== idActiva && !c.pagada).sort((a, b) => a.nombre.localeCompare(b.nombre, "es", { numeric: true }));
   const cuentasAbiertas = cuentas.filter((c) => !c.pagada).sort((a, b) => a.nombre.localeCompare(b.nombre, "es", { numeric: true }));
@@ -430,12 +428,12 @@ function TPV() {
   // cierra la cuenta igual que "Cobrar todo".
   async function handleCobrarPorImporte() {
     if (!cuentaActiva || cobrando || cuentaActiva.pagada) return;
-    const importe = parseFloat(importeParcial);
-    if (!importe || importe <= 0 || importe > pendienteCuenta + 0.001) return;
+    const importe = parsearImporte(importeParcial);
+    if (!esImporteParcialValido(importe, pendienteCuenta)) return;
     setCobrando(true);
     await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", [{ nombre: "Pago a cuenta", precio: importe, cantidad: 1 }], undefined, metodoPago);
     await abonarCuenta(cuentaActiva.id, importe);
-    if (pendienteCuenta - importe <= 0.001) {
+    if (cubrePendiente(pendienteCuenta, importe)) {
       const tieneCocina = tieneCocinaPendiente(cuentaActiva.items, servidas, cuentaActiva.id);
       if (tieneCocina) {
         await marcarPagada(cuentaActiva.id);
@@ -459,12 +457,7 @@ function TPV() {
     if (itemsACobrar.length === 0) return;
     setCobrando(true);
     await cobrarCuenta(cuentaActiva, sesion?.id ?? "sin-sesion", itemsACobrar, undefined, metodoPago);
-    const restantes = cuentaActiva.items
-      .map((i) => {
-        const l = seleccionParcial.find((s) => claveItem(s.nombre, s.precio, s.categoria) === claveItem(i.nombre, i.precio, i.categoria));
-        return l ? { ...i, cantidad: i.cantidad - l.cobrar } : i;
-      })
-      .filter((i) => i.cantidad > 0);
+    const restantes = itemsRestantes(cuentaActiva.items, seleccionParcial);
     if (restantes.length === 0) {
       const tieneCocina = tieneCocinaPendiente(cuentaActiva.items, servidas, cuentaActiva.id);
       if (tieneCocina) {
@@ -1406,7 +1399,7 @@ function TPV() {
                 <div className="shrink-0 border-t border-gray-200 px-5 py-3 flex justify-between items-baseline">
                   <span className="text-gray-500 text-sm uppercase tracking-wider">A cobrar</span>
                   <span className="text-2xl font-bold text-amber-600 tabular-nums">
-                    {seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€
+                    {totalSeleccion(seleccionParcial).toFixed(2)}€
                   </span>
                 </div>
                 <div className="shrink-0 px-4 pb-4 flex flex-col gap-2">
@@ -1415,7 +1408,7 @@ function TPV() {
                     disabled={cobrando || seleccionParcial.every((l) => l.cobrar === 0)}
                     className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-30 rounded-2xl font-bold text-white text-base touch-manipulation"
                   >
-                    {cobrando ? "Guardando…" : `Cobrar ${seleccionParcial.reduce((s, l) => s + l.precio * l.cobrar, 0).toFixed(2)}€`}
+                    {cobrando ? "Guardando…" : `Cobrar ${totalSeleccion(seleccionParcial).toFixed(2)}€`}
                   </button>
                   <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cancelar</button>
                 </div>
@@ -1430,17 +1423,17 @@ function TPV() {
                     {importeParcial || "0"}€
                   </div>
                   <NumPad value={importeParcial} onChange={setImporteParcial} />
-                  {parseFloat(importeParcial || "0") > pendienteCuenta + 0.001 && (
+                  {superaPendiente(parsearImporte(importeParcial), pendienteCuenta) && (
                     <p className="text-center text-xs text-red-600">No puede superar lo pendiente ({pendienteCuenta.toFixed(2)}€)</p>
                   )}
                 </div>
                 <div className="shrink-0 px-4 pb-4 flex flex-col gap-2">
                   <button
                     onClick={handleCobrarPorImporte}
-                    disabled={cobrando || !importeParcial || parseFloat(importeParcial) <= 0 || parseFloat(importeParcial) > pendienteCuenta + 0.001}
+                    disabled={cobrando || !esImporteParcialValido(parsearImporte(importeParcial), pendienteCuenta)}
                     className="w-full py-4 bg-green-600 active:bg-green-700 disabled:opacity-30 rounded-2xl font-bold text-white text-base touch-manipulation"
                   >
-                    {cobrando ? "Guardando…" : `Cobrar ${(parseFloat(importeParcial) || 0).toFixed(2)}€ a cuenta`}
+                    {cobrando ? "Guardando…" : `Cobrar ${parsearImporte(importeParcial).toFixed(2)}€ a cuenta`}
                   </button>
                   <button onClick={() => setModal(null)} className="w-full py-3 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cancelar</button>
                 </div>
@@ -1497,7 +1490,7 @@ function TPV() {
             <p className="text-center text-gray-500 text-sm">{personas} personas</p>
             <div className="bg-gray-100 rounded-2xl p-5 text-center">
               <p className="text-gray-500 text-sm mb-1 uppercase tracking-wider">Cada uno paga</p>
-              <p className="text-5xl font-bold text-amber-600 tabular-nums">{(cuentaActiva.total / personas).toFixed(2)}€</p>
+              <p className="text-5xl font-bold text-amber-600 tabular-nums">{importePorPersona(cuentaActiva.total, personas).toFixed(2)}€</p>
             </div>
             <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cerrar</button>
           </div>
@@ -1512,7 +1505,7 @@ function TPV() {
             <p className="text-center text-gray-500">Total: <span className="text-gray-900 font-semibold">{cuentaActiva.total.toFixed(2)}€</span></p>
             <div className="bg-gray-100 rounded-2xl px-4 py-3 text-right text-3xl font-bold tabular-nums min-h-[56px]">{efectivo || "0"}€</div>
             <NumPad value={efectivo} onChange={setEfectivo} />
-            {parseFloat(efectivo || "0") > 0 && (
+            {parsearImporte(efectivo) > 0 && (
               <div className="bg-gray-100 rounded-2xl p-4 text-center">
                 <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">Cambio</p>
                 <p className={`text-4xl font-bold tabular-nums ${cambio >= 0 ? "text-green-600" : "text-red-600"}`}>{cambio.toFixed(2)}€</p>
@@ -1617,9 +1610,7 @@ function TPV() {
                 }).filter((g) => g.cobros.length > 0);
 
                 return grupos.map((sesion) => {
-                  const totalSesion = sesion.cobros.reduce((s, c) => s + Number(c.total), 0);
-                  const efectivoSesion = sesion.cobros.filter((c) => c.metodo_pago !== "tarjeta").reduce((s, c) => s + Number(c.total), 0);
-                  const tarjetaSesion = sesion.cobros.filter((c) => c.metodo_pago === "tarjeta").reduce((s, c) => s + Number(c.total), 0);
+                  const { total: totalSesion, efectivo: efectivoSesion, tarjeta: tarjetaSesion } = desglosePorMetodo(sesion.cobros);
                   const etiqueta = sesion.turno === "mañana" ? "Turno de Mañana" : "Turno de Tarde";
                   const colorEtiqueta = sesion.turno === "mañana" ? "text-orange-600" : "text-indigo-600";
                   const timestamp = sesion.startTime || null;
