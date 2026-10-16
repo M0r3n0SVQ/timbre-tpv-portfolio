@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | **Qué** | Esquema `public` completo: tablas, datos, RLS, políticas y permisos |
-| **Cuándo** | Cada noche a las 03:00 UTC (05:00 / 04:00 en Madrid), con el bar cerrado |
+| **Cuándo** | Programado a las 03:00 UTC, pero GitHub retrasa los cron: en la práctica empieza hacia las 07:30–08:10 UTC |
 | **Dónde** | Artifacts de GitHub Actions, 30 días de retención |
 | **Cifrado** | [age](https://age-encryption.org/), clave pública en el workflow de backup y privada solo en el de restauración |
 | **Prueba de restauración** | Cada lunes, sobre el último backup, en un PostgreSQL vacío |
-| **RPO** (datos que se pueden perder) | Hasta 24 h: lo ocurrido desde el último backup nocturno |
+| **RPO** (datos que se pueden perder) | Hasta 24 h: lo ocurrido desde el último backup |
 
 La copia que hace la propia app en la tabla `backups` es otra cosa: protege frente a errores de uso durante el día, pero vive en la misma base de datos y no sirve si se pierde.
 
@@ -89,5 +89,5 @@ Con `age` y Docker instalados, en Git Bash:
 
 - **Cuentas de usuario:** el backup no incluye `auth.users`. Solo hay una cuenta, la del bar, y se vuelve a crear a mano.
 - **Retención:** 30 días como máximo, y solo en GitHub. Un segundo destino fuera de GitHub (un bucket S3/B2) sería la siguiente mejora.
-- **Consistencia del manifiesto:** las filas se cuentan justo después del volcado, no en la misma transacción. A las 5 de la mañana no hay escrituras, así que coinciden. Si alguna vez la prueba falla por pocas filas en una tabla, este es el primer sospechoso.
+- **Consistencia del manifiesto:** las filas se cuentan justo después del volcado, no en la misma transacción. En el proyecto de demo casi no hay escrituras, así que coinciden; en producción, donde el backup puede coincidir con el turno de mañana por el retraso de GitHub, es más probable que no. Si alguna vez la prueba falla por pocas filas en una tabla, este es el primer sospechoso.
 - **Proyectos pausados:** Supabase pausa los proyectos gratuitos tras una semana sin actividad. Si eso pasa, el backup fallará y GitHub enviará un email.
