@@ -5,7 +5,7 @@
 
 TPV (terminal punto de venta) web para **Cervecería El Timbre**, pensado para que varios camareros trabajen a la vez desde el móvil, con sincronización en tiempo real entre dispositivos y una pantalla de cocina.
 
-> **En producción en un negocio real** desde mayo de 2026, usado a diario en cada servicio: 226 turnos abiertos y, desde julio, más de 1.700 cuentas cobradas con 8.600 artículos. Lo que más sale es la cortada (4.851).
+> **En producción en un negocio real** desde mayo de 2026, usado a diario en cada servicio: 226 turnos abiertos desde entonces y, desde julio, más de 1.700 cuentas cobradas con 8.600 artículos. Lo que más sale desde el primer día es la cortada, con 4.851.
 > Este es el repositorio público del proyecto. El despliegue de producción vive en un repositorio privado para no exponer su infraestructura, configuración ni datos.
 
 ## Demo en vivo
@@ -30,12 +30,14 @@ flowchart LR
     M["📱 Móviles de los camareros<br/>(PWA · Next.js en el navegador)"]
     V["▲ Vercel<br/>build + CDN + /api/health"]
     S[("Supabase<br/>PostgreSQL + RLS · Auth · Realtime")]
+    R["GitHub<br/>repositorio"]
     G["GitHub Actions<br/>CI · backup diario · prueba de restauración"]
     A[("Artifacts<br/>backups cifrados (age)")]
     U["UptimeRobot<br/>cada 5 min"]
     H["Healthchecks.io<br/>dead man's switch"]
 
-    G -. push a main .-> V
+    R -. "push a main (integración de Vercel)" .-> V
+    R -- "push / PR" --> G
     V -- HTML/JS --> M
     M -- "HTTPS (REST) con sesión" --> S
     S -- "WebSocket (tiempo real)" --> M
@@ -48,7 +50,7 @@ flowchart LR
 
 - **Sin backend propio para los datos:** el navegador habla directamente con Supabase mediante `@supabase/supabase-js`, y RLS decide qué puede hacer. El único código de servidor es el health check (`/api/health`).
 - **Sincronización en dos capas:** Supabase Realtime para cambios inmediatos y polling de respaldo para garantizar que todos los dispositivos convergen.
-- **Despliegue continuo:** Vercel despliega cada push a `main`; GitHub Actions ejecuta el CI en paralelo. Cuando el repositorio sea público, la protección de rama hará que solo llegue a `main` lo que pase el CI (en repos privados del plan gratuito no se aplica).
+- **Despliegue continuo:** Vercel despliega cada push a `main`; GitHub Actions ejecuta el CI en paralelo. La protección de rama de `main` exige que pase el CI (job `build`) para integrar cambios, salvo los pushes directos del administrador.
 
 Documentación técnica completa (esquema, decisiones de diseño, seguridad e incidentes): **[ARCHITECTURE.md](./ARCHITECTURE.md)**.
 
@@ -59,9 +61,9 @@ Next.js 16 · React 19 · TypeScript · Tailwind CSS 4 · Supabase (PostgreSQL) 
 ## Estructura
 
 ```
-app/                  Interfaz (Next.js App Router): página única, layout PWA y manifest
-components/           Componentes reutilizables (BottomSheet, NumPad)
-hooks/                Un hook por dominio: cuentas, cobros, sesión, cocina
+app/                  Interfaz (Next.js App Router): página única, layout PWA, manifest y `/api/health`
+components/           Componentes reutilizables (BottomSheet, NumPad, PantallaLogin)
+hooks/                Un hook por dominio: autenticación, cuentas, cobros, sesión, cocina
 lib/                  Lógica pura y testeada + cliente de Supabase
 supabase/schema.sql   Esquema de la base de datos
 supabase/migrations/  Migraciones, cada una documentada
@@ -72,7 +74,7 @@ docs/                 Runbooks y operación: RLS, backups, monitorización
 
 ## Ejecutar en local
 
-Requisitos: Node.js 20+ y un proyecto de Supabase (el plan gratuito sirve).
+Requisitos: Node.js 22+ y un proyecto de Supabase (el plan gratuito sirve).
 
 1. En Supabase:
    - SQL Editor: ejecuta [`supabase/schema.sql`](./supabase/schema.sql).
@@ -135,8 +137,8 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 - [x] Autenticación y Row Level Security en todas las tablas
 - [x] Backups automáticos de la base de datos con restauración probada
 - [x] Monitorización de disponibilidad con alertas
-- [ ] Seguimiento de errores del navegador (Sentry)
 - [x] Runbook de incidencias
+- [ ] Seguimiento de errores del navegador (Sentry)
 
 ## Sobre el desarrollo
 
