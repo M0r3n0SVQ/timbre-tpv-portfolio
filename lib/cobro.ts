@@ -1,19 +1,25 @@
 import type { Cobro, Item } from "./types";
 import { claveItem } from "./itemIdentity";
 
-// Margen para comparar importes: los totales son sumas de floats
-// (1.1 * 3 = 3.3000000000000003), así que "igual" es "a menos de 0.001".
+// Margen para comparar importes que vienen de fuera (lo tecleado en el
+// NumPad, lo que devuelve Supabase): "igual" es "a menos de 0.001".
 export const TOLERANCIA_CENTIMOS = 0.001;
+
+// Las sumas de floats dejan restos (1.1 * 3 = 3.3000000000000003). La base
+// de datos guarda NUMERIC(8,2), así que en local redondeamos igual.
+export function redondearCentimos(importe: number): number {
+  return Math.round(importe * 100) / 100;
+}
 
 export type LineaParcial = { nombre: string; precio: number; categoria?: string; max: number; cobrar: number };
 
 export function totalLineas(items: Pick<Item, "precio" | "cantidad">[]): number {
-  return items.reduce((s, i) => s + i.precio * i.cantidad, 0);
+  return redondearCentimos(items.reduce((s, i) => s + i.precio * i.cantidad, 0));
 }
 
 // Lo que queda por cobrar descontando lo ya pagado "a cuenta" por importe suelto.
 export function pendientePorCobrar(total: number, cobradoParcial?: number): number {
-  return Math.max(0, total - (cobradoParcial ?? 0));
+  return Math.max(0, redondearCentimos(total - (cobradoParcial ?? 0)));
 }
 
 // "" o texto no numérico cuenta como 0, igual que muestra el NumPad.
@@ -22,11 +28,18 @@ export function parsearImporte(texto: string): number {
 }
 
 export function calcularCambio(entregado: string, total: number): number {
-  return parsearImporte(entregado) - total;
+  return redondearCentimos(parsearImporte(entregado) - total);
 }
 
-export function importePorPersona(total: number, personas: number): number {
-  return total / personas;
+export type Reparto = { cadaUno: number; cuantosPaganMas: number; pagaMas: number };
+
+// Reparte en céntimos para que la suma cuadre con el total: 10€ entre 3 son
+// 3.33 cada uno y uno paga 3.34.
+export function repartirEntre(total: number, personas: number): Reparto {
+  if (!Number.isInteger(personas) || personas < 1) throw new RangeError(`No se puede repartir entre ${personas} personas`);
+  const centimos = Math.round(total * 100);
+  const base = Math.floor(centimos / personas);
+  return { cadaUno: base / 100, cuantosPaganMas: centimos - base * personas, pagaMas: (base + 1) / 100 };
 }
 
 export function superaPendiente(importe: number, pendiente: number): boolean {
@@ -43,7 +56,7 @@ export function cubrePendiente(pendiente: number, importe: number): boolean {
 }
 
 export function totalSeleccion(lineas: LineaParcial[]): number {
-  return lineas.reduce((s, l) => s + l.precio * l.cobrar, 0);
+  return redondearCentimos(lineas.reduce((s, l) => s + l.precio * l.cobrar, 0));
 }
 
 // Items que quedan en la cuenta tras cobrar la selección por artículos. Se
@@ -68,5 +81,5 @@ export function desglosePorMetodo(cobros: Pick<Cobro, "total" | "metodo_pago">[]
     if (c.metodo_pago === "tarjeta") tarjeta += Number(c.total);
     else efectivo += Number(c.total);
   }
-  return { total, efectivo, tarjeta };
+  return { total: redondearCentimos(total), efectivo: redondearCentimos(efectivo), tarjeta: redondearCentimos(tarjeta) };
 }

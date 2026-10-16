@@ -13,7 +13,7 @@ import { PRODUCTOS, CATEGORIAS } from "@/lib/carta";
 import { supabase } from "@/lib/supabase";
 import { claveItem } from "@/lib/itemIdentity";
 import { CATS_COCINA, categoriaCocina, esItemCocina, tieneCocinaPendiente, pendienteDe } from "@/lib/cocina";
-import { calcularCambio, cubrePendiente, desglosePorMetodo, esImporteParcialValido, importePorPersona, itemsRestantes, parsearImporte, pendientePorCobrar, superaPendiente, totalLineas, totalSeleccion, type LineaParcial } from "@/lib/cobro";
+import { calcularCambio, cubrePendiente, desglosePorMetodo, esImporteParcialValido, itemsRestantes, parsearImporte, pendientePorCobrar, repartirEntre, superaPendiente, totalLineas, totalSeleccion, type LineaParcial } from "@/lib/cobro";
 import type { Cobro, Cuenta, Item, MetodoPago } from "@/lib/types";
 
 type Modal = "cobrar" | "parcial" | "dividir" | "cambio" | "historial" | "libre" | "ticket" | "cobro-rapido" | "lista-compra" | "juntar" | "cocina" | null;
@@ -238,6 +238,7 @@ function TPV() {
   const productosRapidosFiltrados = PRODUCTOS.filter((p) => p.categoria === categoriaRapida).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const { total: totalDia, efectivo: totalEfectivoDia, tarjeta: totalTarjetaDia } = desglosePorMetodo(cobros);
   const cambio = calcularCambio(efectivo, pendienteCuenta);
+  const repartoDividir = repartirEntre(pendienteCuenta, personas);
   const sinItems = (cuentaActiva?.items.length ?? 0) === 0;
   const totalRapido = totalLineas(itemsRapidos);
   const itemsCompraPendientes = listaCompra.filter((i) => !i.hecho).length;
@@ -1497,7 +1498,10 @@ function TPV() {
             <p className="text-center text-gray-500 text-sm">{personas} personas</p>
             <div className="bg-gray-100 rounded-2xl p-5 text-center">
               <p className="text-gray-500 text-sm mb-1 uppercase tracking-wider">Cada uno paga</p>
-              <p className="text-5xl font-bold text-amber-600 tabular-nums">{importePorPersona(pendienteCuenta, personas).toFixed(2)}€</p>
+              <p className="text-5xl font-bold text-amber-600 tabular-nums">{repartoDividir.cadaUno.toFixed(2)}€</p>
+              {repartoDividir.cuantosPaganMas > 0 && (
+                <p className="text-sm text-gray-500 mt-1 tabular-nums">{repartoDividir.cuantosPaganMas} paga{repartoDividir.cuantosPaganMas !== 1 ? "n" : ""} {repartoDividir.pagaMas.toFixed(2)}€</p>
+              )}
             </div>
             <button onClick={() => setModal(null)} className="w-full py-4 bg-gray-100 active:bg-gray-200 rounded-2xl text-gray-500 touch-manipulation">Cerrar</button>
           </div>

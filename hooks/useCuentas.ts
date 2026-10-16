@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Cuenta, Item } from "@/lib/types";
+import { redondearCentimos, totalLineas } from "@/lib/cobro";
 
 export type HookError = { message: string; id: number };
 
@@ -62,7 +63,7 @@ export function useCuentas() {
   }
 
   async function actualizarCuenta(id: string, items: Item[]) {
-    const total = items.reduce((sum, i) => sum + i.precio * i.cantidad, 0);
+    const total = totalLineas(items);
 
     setCuentas((prev) =>
       prev.map((c) => (c.id === id ? { ...c, items, total } : c))
@@ -111,7 +112,7 @@ export function useCuentas() {
   // importe suelto, no ligado a artículos). Lo pendiente de la cuenta pasa
   // a ser total - cobrado_parcial.
   async function abonarCuenta(id: string, importe: number) {
-    const nuevo = (cuentas.find((c) => c.id === id)?.cobrado_parcial ?? 0) + importe;
+    const nuevo = redondearCentimos((cuentas.find((c) => c.id === id)?.cobrado_parcial ?? 0) + importe);
     setCuentas((prev) => prev.map((c) => c.id === id ? { ...c, cobrado_parcial: nuevo } : c));
     const { error } = await supabase.from("cuentas").update({ cobrado_parcial: nuevo }).eq("id", id);
     if (error) { reportError(error.message); fetchCuentas(); return false; }

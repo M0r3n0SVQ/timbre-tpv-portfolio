@@ -4,10 +4,11 @@ import {
   cubrePendiente,
   desglosePorMetodo,
   esImporteParcialValido,
-  importePorPersona,
   itemsRestantes,
   parsearImporte,
   pendientePorCobrar,
+  redondearCentimos,
+  repartirEntre,
   superaPendiente,
   totalLineas,
   totalSeleccion,
@@ -25,16 +26,16 @@ function linea(item: Item, cobrar: number): LineaParcial {
 
 describe("totalLineas", () => {
   it("suma precio por cantidad", () => {
-    expect(totalLineas([lomoMontadito, cana])).toBeCloseTo(11.3, 10);
+    expect(totalLineas([lomoMontadito, cana])).toBe(11.3);
   });
 
   it("cuenta vacía da 0", () => {
     expect(totalLineas([])).toBe(0);
   });
 
-  it("no redondea a céntimos: arrastra el error de los floats", () => {
-    expect(totalLineas([{ precio: 0.1, cantidad: 3 }])).toBe(0.30000000000000004);
-    expect(totalLineas([{ precio: 0.1, cantidad: 3 }]).toFixed(2)).toBe("0.30");
+  it("redondea a céntimos el resto que dejan los floats", () => {
+    expect(totalLineas([{ precio: 0.1, cantidad: 3 }])).toBe(0.3);
+    expect(totalLineas([{ precio: 1.1, cantidad: 3 }])).toBe(3.3);
   });
 });
 
@@ -51,11 +52,9 @@ describe("pendientePorCobrar", () => {
     expect(pendientePorCobrar(10, 12)).toBe(0);
   });
 
-  it("deja un resto minúsculo si el total viene de floats", () => {
-    const total = totalLineas([{ precio: 1.1, cantidad: 3 }]);
-    const pendiente = pendientePorCobrar(total, 3.3);
-    expect(pendiente).toBeGreaterThan(0);
-    expect(cubrePendiente(pendiente, 0)).toBe(true);
+  it("no deja restos minúsculos de floats", () => {
+    expect(pendientePorCobrar(1.1 * 3, 3.3)).toBe(0);
+    expect(pendientePorCobrar(10.2, 5.1)).toBe(5.1);
   });
 });
 
@@ -73,7 +72,7 @@ describe("parsearImporte", () => {
 
 describe("calcularCambio", () => {
   it("devuelve lo que hay que dar de vuelta", () => {
-    expect(calcularCambio("50", 37.8)).toBeCloseTo(12.2, 10);
+    expect(calcularCambio("50", 37.8)).toBe(12.2);
   });
 
   it("exacto da 0", () => {
@@ -81,7 +80,7 @@ describe("calcularCambio", () => {
   });
 
   it("si entregan menos que el total sale negativo (lo que falta)", () => {
-    expect(calcularCambio("10", 12.4)).toBeCloseTo(-2.4, 10);
+    expect(calcularCambio("10", 12.4)).toBe(-2.4);
   });
 
   it("sin nada tecleado es menos el total", () => {
@@ -89,7 +88,7 @@ describe("calcularCambio", () => {
   });
 
   it("céntimos", () => {
-    expect(calcularCambio("20.05", 19.95).toFixed(2)).toBe("0.10");
+    expect(calcularCambio("20.05", 19.95)).toBe(0.1);
   });
 
   it("con pago a cuenta se calcula sobre lo pendiente, no sobre el total", () => {
@@ -97,23 +96,55 @@ describe("calcularCambio", () => {
   });
 });
 
-describe("importePorPersona", () => {
-  it("división exacta", () => {
-    expect(importePorPersona(30, 2)).toBe(15);
+describe("redondearCentimos", () => {
+  it("deja dos decimales", () => {
+    expect(redondearCentimos(0.1 + 0.2)).toBe(0.3);
+    expect(redondearCentimos(3.456)).toBe(3.46);
+    expect(redondearCentimos(-2.4000000000000004)).toBe(-2.4);
+  });
+});
+
+describe("repartirEntre", () => {
+  function sumaReparto(personas: number, r: ReturnType<typeof repartirEntre>): number {
+    return redondearCentimos(r.cadaUno * (personas - r.cuantosPaganMas) + r.pagaMas * r.cuantosPaganMas);
+  }
+
+  it("división exacta: nadie paga de más", () => {
+    expect(repartirEntre(30, 2)).toEqual({ cadaUno: 15, cuantosPaganMas: 0, pagaMas: 15.01 });
   });
 
-  it("si no da exacto, se muestra redondeado y no cuadra al céntimo", () => {
-    const porPersona = importePorPersona(10, 3);
-    expect(porPersona.toFixed(2)).toBe("3.33");
-    expect((Number(porPersona.toFixed(2)) * 3).toFixed(2)).toBe("9.99");
+  it("si no da exacto, uno paga el céntimo que falta y cuadra", () => {
+    const r = repartirEntre(10, 3);
+    expect(r).toEqual({ cadaUno: 3.33, cuantosPaganMas: 1, pagaMas: 3.34 });
+    expect(sumaReparto(3, r)).toBe(10);
+  });
+
+  it("puede sobrar más de un céntimo", () => {
+    const r = repartirEntre(10, 6);
+    expect(r).toEqual({ cadaUno: 1.66, cuantosPaganMas: 4, pagaMas: 1.67 });
+    expect(sumaReparto(6, r)).toBe(10);
+  });
+
+  it("cuadra con totales que arrastran floats", () => {
+    const total = 0.1 * 3 + 12.4;
+    expect(sumaReparto(4, repartirEntre(total, 4))).toBe(12.7);
+  });
+
+  it("más personas que céntimos", () => {
+    expect(repartirEntre(0.02, 5)).toEqual({ cadaUno: 0, cuantosPaganMas: 2, pagaMas: 0.01 });
   });
 
   it("cuenta a 0", () => {
-    expect(importePorPersona(0, 4)).toBe(0);
+    expect(repartirEntre(0, 4)).toEqual({ cadaUno: 0, cuantosPaganMas: 0, pagaMas: 0.01 });
   });
 
   it("con pago a cuenta se reparte solo lo pendiente", () => {
-    expect(importePorPersona(pendientePorCobrar(40, 10), 3)).toBe(10);
+    expect(repartirEntre(pendientePorCobrar(40, 10), 3).cadaUno).toBe(10);
+  });
+
+  it("rechaza 0 personas o no enteras", () => {
+    expect(() => repartirEntre(10, 0)).toThrow(RangeError);
+    expect(() => repartirEntre(10, 2.5)).toThrow(RangeError);
   });
 });
 
@@ -152,7 +183,7 @@ describe("cobro parcial por importe", () => {
 
 describe("cobro parcial por artículos", () => {
   it("totalSeleccion suma solo lo marcado", () => {
-    expect(totalSeleccion([linea(lomoMontadito, 1), linea(cana, 2), linea(lomoTapa, 0)])).toBeCloseTo(6.4, 10);
+    expect(totalSeleccion([linea(lomoMontadito, 1), linea(cana, 2), linea(lomoTapa, 0)])).toBe(6.4);
   });
 
   it("totalSeleccion sin nada marcado da 0", () => {
@@ -186,9 +217,7 @@ describe("desglosePorMetodo", () => {
       { total: 20, metodo_pago: "tarjeta" },
       { total: 3.4, metodo_pago: "efectivo" },
     ]);
-    expect(d.efectivo).toBeCloseTo(15.9, 10);
-    expect(d.tarjeta).toBe(20);
-    expect(d.total).toBeCloseTo(35.9, 10);
+    expect(d).toEqual({ total: 35.9, efectivo: 15.9, tarjeta: 20 });
   });
 
   it("cobros antiguos sin método cuentan como efectivo", () => {
