@@ -50,7 +50,7 @@ flowchart LR
 
 - **Sin backend propio para los datos:** el navegador habla directamente con Supabase mediante `@supabase/supabase-js`, y RLS decide qué puede hacer. El único código de servidor es el health check (`/api/health`).
 - **Sincronización en dos capas:** Supabase Realtime para cambios inmediatos y polling de respaldo para garantizar que todos los dispositivos convergen.
-- **Despliegue continuo:** Vercel despliega cada push a `main`; GitHub Actions ejecuta el CI en paralelo. La protección de rama de `main` exige que pase el CI (job `build`) para integrar cambios, salvo los pushes directos del administrador.
+- **Despliegue continuo:** Vercel despliega cada push a `main`; GitHub Actions ejecuta el CI en paralelo. Todo cambio llega a `main` mediante pull request: la protección de rama exige que pase el CI (job `build`), sin excepciones para administradores.
 
 Documentación técnica completa (esquema, decisiones de diseño, seguridad e incidentes): **[ARCHITECTURE.md](./ARCHITECTURE.md)**.
 
