@@ -91,6 +91,10 @@ describe("calcularCambio", () => {
   it("céntimos", () => {
     expect(calcularCambio("20.05", 19.95).toFixed(2)).toBe("0.10");
   });
+
+  it("con pago a cuenta se calcula sobre lo pendiente, no sobre el total", () => {
+    expect(calcularCambio("50", pendientePorCobrar(40, 20))).toBe(30);
+  });
 });
 
 describe("importePorPersona", () => {
@@ -106,6 +110,10 @@ describe("importePorPersona", () => {
 
   it("cuenta a 0", () => {
     expect(importePorPersona(0, 4)).toBe(0);
+  });
+
+  it("con pago a cuenta se reparte solo lo pendiente", () => {
+    expect(importePorPersona(pendientePorCobrar(40, 10), 3)).toBe(10);
   });
 });
 
