@@ -89,5 +89,5 @@ Con `age` y Docker instalados, en Git Bash:
 
 - **Cuentas de usuario:** el backup no incluye `auth.users`. Solo hay una cuenta, la del bar, y se vuelve a crear a mano.
 - **Retención:** 30 días como máximo, y solo en GitHub. Un segundo destino fuera de GitHub (un bucket S3/B2) sería la siguiente mejora.
-- **Consistencia del manifiesto:** las filas se cuentan justo después del volcado, no en la misma transacción. En el proyecto de demo casi no hay escrituras, así que coinciden; en producción, donde el backup puede coincidir con el turno de mañana por el retraso de GitHub, es más probable que no. Si alguna vez la prueba falla por pocas filas en una tabla, este es el primer sospechoso.
+- **Consistencia del manifiesto:** las filas se cuentan justo después del volcado, no en la misma transacción. En el proyecto de demo casi no hay escrituras, y en producción el backup empieza hacia las 10:00, antes de que abra el bar (12:00), así que coinciden. Si GitHub lo retrasara más de dos horas, podría coincidir con la apertura. Si alguna vez la prueba falla por pocas filas en una tabla, este es el primer sospechoso.
 - **Proyectos pausados:** Supabase pausa los proyectos gratuitos tras una semana sin actividad. Si eso pasa, el backup fallará y GitHub enviará un email.
