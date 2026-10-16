@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { Cobro, Cuenta, Item, MetodoPago } from "@/lib/types";
+import { totalLineas } from "@/lib/cobro";
 import type { HookError } from "@/hooks/useCuentas";
 
 export function useCobros() {
@@ -53,7 +54,7 @@ export function useCobros() {
     // totalOverride: para cobrar solo lo pendiente cuando ya se ha cobrado
     // parte de la cuenta por un importe suelto (cobrado_parcial), sin perder
     // el desglose de artículos real en el recibo.
-    const total = totalOverride ?? items.reduce((s, i) => s + i.precio * i.cantidad, 0);
+    const total = totalOverride ?? totalLineas(items);
     const { data, error } = await supabase
       .from("cobros")
       .insert({
