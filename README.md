@@ -17,7 +17,7 @@ Funciona contra un proyecto de Supabase de demostración, separado del de produc
 ## Qué hace
 
 - Cuentas simultáneas por mesa o cliente: añadir productos, juntar cuentas, renombrar, borrar.
-- Cobro completo, parcial (por artículos o por importe), dividido entre N y cálculo de cambio; efectivo o tarjeta con desglose de caja.
+- Cobro completo, parcial (por artículos o por importe), dividido entre N y cálculo de cambio, siempre sobre lo que queda por pagar; efectivo o tarjeta con desglose de caja.
 - Turnos de mañana y tarde compartidos entre dispositivos, con historial de cobros y ticket.
 - Pantalla de cocina con los platos pendientes en orden de llegada.
 - Lista de la compra compartida.
@@ -120,7 +120,7 @@ Nunca se usa la clave `service_role` ni la contraseña de la base de datos en el
 - **Backups:** volcado diario cifrado de la base de datos con GitHub Actions y **prueba de restauración automática semanal** en un PostgreSQL vacío, que comprueba tablas, número de filas y RLS. Ver [docs/backups.md](./docs/backups.md).
 - **Monitorización:** endpoint `/api/health` que comprueba que Supabase responde y que la base de datos sigue protegida, vigilado cada 5 minutos con UptimeRobot; los backups avisan a Healthchecks.io, que alerta si fallan o si no llegan a ejecutarse. Ver [docs/monitorizacion.md](./docs/monitorizacion.md).
 - **Dependencias:** Dependabot propone cada semana las actualizaciones (npm y GitHub Actions) como PRs que valida el CI.
-- **Tests:** la lógica crítica (identidad de platos, cálculo de cocina) está extraída a `lib/` y cubierta con tests, a raíz de un [incidente real en producción](./ARCHITECTURE.md#incidente-platos-homónimos-entre-categorías).
+- **Tests:** la lógica crítica (identidad de platos, cocina y cálculos de cobro) está extraída a `lib/` y cubierta con tests, a raíz de un [incidente real en producción](./ARCHITECTURE.md#incidente-platos-homónimos-entre-categorías). Al testear el cobro salió otro fallo: el cambio y el dividir no descontaban lo ya pagado a cuenta ([detalle](./ARCHITECTURE.md#tests-y-ci)).
 - **Seguridad:** autenticación de Supabase y Row Level Security en todas las tablas; sin sesión, la clave pública no da acceso a ningún dato. Una sola contraseña por dispositivo, que se queda guardada y se renueva sola para no interrumpir el servicio.
 
 ### Operación

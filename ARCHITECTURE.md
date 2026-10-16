@@ -15,7 +15,7 @@ TPV (Terminal Punto de Venta) web para **Cervecería El Timbre**. App móvil-fir
 | Realtime | Supabase Realtime (`postgres_changes`) + polling |
 | Auth | Supabase Auth (email + contraseña) + RLS |
 | Tests | Vitest |
-| CI | GitHub Actions (lint, tests, build) |
+| CI | GitHub Actions (auditoría de dependencias, lint, tests, build) |
 | Deploy | Vercel (auto-deploy en push a `main`) |
 | PWA | `manifest.ts` + `apple-touch-icon` + viewport `cover` |
 
@@ -33,9 +33,11 @@ TPV (Terminal Punto de Venta) web para **Cervecería El Timbre**. App móvil-fir
 │  │  app/                             │  │
 │  │  ├── layout.tsx   PWA metadata    │  │
 │  │  ├── manifest.ts  Web App Manifest│  │
-│  │  └── page.tsx     UI única (SPA)  │  │
+│  │  ├── page.tsx     UI única (SPA)  │  │
+│  │  └── api/health/  health check    │  │
 │  │                                   │  │
 │  │  hooks/                           │  │
+│  │  ├── useAuth.ts                   │  │
 │  │  ├── useCuentas.ts                │  │
 │  │  ├── useCobros.ts                 │  │
 │  │  ├── useSesion.ts                 │  │
@@ -46,6 +48,8 @@ TPV (Terminal Punto de Venta) web para **Cervecería El Timbre**. App móvil-fir
 │  │  ├── types.ts     tipos compartidos│ │
 │  │  ├── carta.ts     productos/precios│ │
 │  │  ├── cocina.ts    lógica de cocina │ │
+│  │  ├── cobro.ts     cálculos de cobro│ │
+│  │  ├── health.ts    lógica del health│ │
 │  │  └── itemIdentity.ts               │ │
 │  └───────────────────────────────────┘  │
 └────────────────────┬────────────────────┘
@@ -78,7 +82,7 @@ El esquema completo está en [`supabase/schema.sql`](./supabase/schema.sql); los
 ### `cuentas`
 Cuentas abiertas en este momento. Se borran al cobrar, salvo que les queden artículos de cocina (Montaditos/Tapas) pendientes de servir — en ese caso se marca `pagada = true` en vez de borrarse, para que la pantalla de Cocina la siga mostrando hasta que se sirva todo. Un `useEffect` en `page.tsx` la borra sola en cuanto no le queda nada pendiente.
 
-`cobrado_parcial` lleva la cuenta del dinero ya cobrado por un importe suelto (cobro parcial "por importe"). Lo pendiente de cobrar siempre es `total - cobrado_parcial`, calculado en el cliente, nunca guardado como columna aparte para no desincronizarse.
+`cobrado_parcial` lleva la cuenta del dinero ya cobrado por un importe suelto (cobro parcial "por importe"). Lo pendiente de cobrar siempre es `total - cobrado_parcial`, calculado en el cliente, nunca guardado como columna aparte para no desincronizarse. Cobrar el resto, calcular el cambio y dividir trabajan siempre sobre lo pendiente (`pendientePorCobrar` en `lib/cobro.ts`).
 
 ```sql
 CREATE TABLE cuentas (
@@ -225,7 +229,7 @@ libre, ticket, cobro-rápido, lista-compra, juntar, cocina
 |---|---|
 | Cuentas múltiples | Crear, renombrar, borrar, juntar cuentas |
 | Carta por categorías | Tabs horizontales, añadir/quitar productos, importe libre |
-| Cobro | Completo, parcial (por artículos o por importe), dividido entre N, cálculo de cambio |
+| Cobro | Completo, parcial (por artículos o por importe), dividido entre N con los céntimos cuadrados, cálculo de cambio; todo sobre lo pendiente |
 | Método de pago | Efectivo o tarjeta, con desglose de caja |
 | Cobro rápido | Consumos rápidos sin cuenta asignada |
 | Turnos | Mañana/tarde compartidos entre dispositivos, caja de inicio |
@@ -260,6 +264,10 @@ npm test
 
 - `lib/itemIdentity.test.ts` — identidad de un plato dentro de una cuenta.
 - `lib/cocina.test.ts` — cálculo de pendientes de cocina, incluido el caso del incidente.
+- `lib/cobro.test.ts` — pendiente, cambio, dividir, cobro parcial por importe y por artículos, desglose efectivo/tarjeta y redondeo a céntimos.
+- `lib/health.test.ts` — respuesta del health check según lo que devuelve Supabase.
+
+Al sacar los cálculos de cobro de `page.tsx` a `lib/cobro.ts` para testearlos salieron dos fallos que nadie había notado: *Calcular cambio* y *Dividir* usaban el total de la cuenta aunque ya hubiera un pago a cuenta (con 40 € de cuenta, 20 € pagados y 50 € entregados, daba 10 € de cambio en vez de 30 €), y al dividir 10 € entre 3 los tres pagos sumaban 9,99 €. Ambos están corregidos y cubiertos por tests.
 
 GitHub Actions (`.github/workflows/ci.yml`) se ejecuta en cada push y PR a `main`, con permisos de solo lectura:
 
@@ -297,6 +305,9 @@ Las tablas creadas a mano pueden no estar en la publicación `supabase_realtime`
 
 **¿Por qué DELETE + INSERT en `comandas_servidas`?**
 El cliente JS de Supabase se comportaba de forma inconsistente con `upsert` sobre claves compuestas. DELETE + INSERT es explícito, y las llamadas se encolan para evitar carreras.
+
+**¿Cómo se evitan los errores de céntimos?**
+Las sumas en coma flotante dejan restos (`1.1 * 3 = 3.3000000000000003`). La base de datos guarda `NUMERIC(8,2)`, así que en el cliente todos los importes se redondean a céntimos (`redondearCentimos`) antes de mostrarlos, compararlos o guardarlos, y al dividir se reparte en céntimos enteros: 10 € entre 3 son 3,33 € y uno paga 3,34 €.
 
 **¿Por qué se persiste el total si se calcula en el cliente?**
 Para poder ordenar y filtrar por importe en SQL sin expandir el JSONB.
